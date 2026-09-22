@@ -1,13 +1,16 @@
-"""LLM-assisted false positive path completion for POC generation."""
+"""LLM-assisted false-positive detection and POC generation for CSA reports.
+
+The pipeline itself lives in ``run_path_selection.py`` at the repo root; this
+package holds the pieces it drives — see ``docs/pipeline-stages.md`` for the
+ten ordered stages and which module serves each.
+
+Only the live surface is re-exported here.  The package is imported by
+submodule path (``llm_client.fp_analysis.<module>``) throughout the pipeline,
+so this file is a convenience facade, not a load-bearing import site.
+"""
+
 from __future__ import annotations
 
-from llm_client.fp_analysis.function_analyzer import FunctionAnalyzer
-from llm_client.fp_analysis.function_summary import (
-    CachedFunctionData,
-    FunctionSummary,
-    ReturnValueConstraint,
-    normalize_bug_type,
-)
 from llm_client.fp_analysis.models import (
     AnalysisResult,
     Classification,
@@ -16,69 +19,28 @@ from llm_client.fp_analysis.models import (
     FPGap,
     FPGapType,
     GapSeverity,
+    POCPlan,
     ParsedReport,
     PathAnalysis,
-    POCPlan,
     ReportMetadata,
 )
 from llm_client.fp_analysis.path_analyzer import FPAnalyzer
-from llm_client.fp_analysis.summary_cache import SummaryCache
-
-# Context control (post-slice threshold check)
-from llm_client.fp_analysis.context_controller import (
-    CompressedContext,
-    ContextControlConfig,
-    ContextController,
-    SliceContextInfo,
-)
-
-# PDG / slicing exports
 from llm_client.fp_analysis.pdg_models import (
     ControlDepEdge,
     DefUseEdge,
     FunctionPDG,
-    FunctionSummary as PDGFunctionSummary,
+    FunctionSummary,
     PDGNode,
     SDG,
     SliceNode,
     SliceResult,
 )
-from llm_client.fp_analysis.slicer import (
-    SlicerConfig as SlicerConfigAlias,
-    compute_slice,
-    find_trigger_node,
-)
-from llm_client.fp_analysis.slice_analyzer import (
-    SliceConfig,
-    analyze_with_slicing,
-)
-
-# PDG completeness / patching (Strategy 4 & 5)
-from llm_client.fp_analysis.pdg_completeness import (
-    FunctionCompleteness,
-    LLMPDGPatchProvider,
-    PDGCompletenessReport,
-)
-
-# Slice mask (slice tracking data structure)
 from llm_client.fp_analysis.slice_mask import SliceMask
 
 __all__ = [
     # Main API
     "FPAnalyzer",
-    # Function analysis (on-demand summarization)
-    "FunctionAnalyzer",
-    "FunctionSummary",
-    "ReturnValueConstraint",
-    "CachedFunctionData",
-    "normalize_bug_type",
-    "SummaryCache",
-    # Context control
-    "ContextController",
-    "ContextControlConfig",
-    "CompressedContext",
-    "SliceContextInfo",
-    # Models
+    # Report / path models
     "AnalysisResult",
     "Classification",
     "CompletedPath",
@@ -86,28 +48,19 @@ __all__ = [
     "FPGap",
     "FPGapType",
     "GapSeverity",
+    "POCPlan",
     "ParsedReport",
     "PathAnalysis",
-    "POCPlan",
     "ReportMetadata",
-    # PDG / slicing
-    "PDGNode",
-    "DefUseEdge",
+    # PDG / slicing models
     "ControlDepEdge",
+    "DefUseEdge",
     "FunctionPDG",
-    "PDGFunctionSummary",
+    "FunctionSummary",
+    "PDGNode",
     "SDG",
     "SliceNode",
     "SliceResult",
-    "SlicerConfigAlias",
-    "SliceConfig",
-    "compute_slice",
-    "find_trigger_node",
-    "analyze_with_slicing",
-    # PDG completeness / patching
-    "FunctionCompleteness",
-    "PDGCompletenessReport",
-    "LLMPDGPatchProvider",
     # Slice mask
     "SliceMask",
 ]

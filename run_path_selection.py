@@ -162,6 +162,25 @@ def stage_step(n: int, suffix: str) -> str:
     return f"{stage_label(n)}{sep}{suffix}"
 
 
+def report_out_path(args, report_path: Path) -> Path:
+    """Where this report's result JSON is written.
+
+    For a single ``--report`` run, ``--output`` names the file directly.  A batch
+    run has no single report to name the file after, so there the same flag names
+    a *directory* and each report gets ``<dir>/path_selection_<stem>.json``.
+
+    The aggregate goes to ``--batch-summary`` (default
+    ``output/batch_summary.json``) and never to the same path as a per-report
+    file: the two used to share ``--output``, so on a batch run every report's
+    JSON overwrote the previous one and the summary overwrote them all.
+    """
+    default_name = f"path_selection_{report_path.stem}.json"
+    if not getattr(args, "output", None):
+        return HERE / "output" / default_name
+    out = Path(args.output)
+    return out if getattr(args, "report", None) else out / default_name
+
+
 # ═══════════════════════════════════════════════════════════════════════════════════
 # Helpers — reuse from run_wslay_branch_analysis.py
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -727,7 +746,7 @@ def run_path_selection(
             # per-segment candidate blocking that over-pruned.
             selections = analyzer._select_feasible_path_segments(
                 analysis_result, completed, slice_mask,
-                max_rounds=3, selector=None,
+                max_rounds=3,
                 segments=segments,
                 cfg_cache=cfg_cache,
                 hard_constraints=hard_constraints,
@@ -1259,9 +1278,7 @@ def process_report(args, report_path):
         print(f"{'='*70}")
         print("  Verdict:    ❌ FP (no feasible path — the report contradicts itself)")
         print(f"  Reason:     {_fp_reason}")
-        _out = Path(args.output) if args.output else (
-            HERE / "output" / f"path_selection_{report_path.stem}.json"
-        )
+        _out = report_out_path(args, report_path)
         _out.parent.mkdir(parents=True, exist_ok=True)
         _output = {
             "report": report_path.name,
@@ -1372,9 +1389,7 @@ def process_report(args, report_path):
         print(f"{'='*70}")
         print("  Verdict:    ❌ FP (no feasible path — semantic finite-domain conflict)")
         print(f"  Reason:     {semantic_fp_reason}")
-        _out = Path(args.output) if args.output else (
-            HERE / "output" / f"path_selection_{report_path.stem}.json"
-        )
+        _out = report_out_path(args, report_path)
         _out.parent.mkdir(parents=True, exist_ok=True)
         _output = {
             "report": report_path.name,
@@ -1397,9 +1412,7 @@ def process_report(args, report_path):
         return _output
 
     report_stem = report_path.stem
-    out_path = Path(args.output) if args.output else (
-        HERE / "output" / f"path_selection_{report_stem}.json"
-    )
+    out_path = report_out_path(args, report_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'='*70}")
@@ -2118,7 +2131,14 @@ def main():
                         help="Print the full per-segment feasible-path-space ASCII "
                              "tree (collection always runs and is serialized to JSON)")
     parser.add_argument("--output", default=None,
-                        help="Output path for results JSON (default: output/path_selection_<report>.json)")
+                        help="Results JSON path: the file itself for a single "
+                             "--report run, or the DIRECTORY holding one "
+                             "path_selection_<report>.json per report in batch "
+                             "mode (default: output/path_selection_<report>.json)")
+    parser.add_argument("--batch-summary", default=None,
+                        help="Batch aggregate JSON path (default: "
+                             "output/batch_summary.json).  Separate from --output "
+                             "so the aggregate cannot overwrite a report's result.")
     parser.add_argument("--max-reports", type=int, default=None,
                         help="Batch mode: process at most this many reports (no cap by default)")
     args = parser.parse_args()
@@ -2212,7 +2232,8 @@ def main():
           f"ERROR={n_err}  ({time.time() - t_all:.1f}s)")
 
     # Write aggregate JSON
-    agg_out = Path(args.output) if args.output else (HERE / "output" / "batch_summary.json")
+    agg_out = (Path(args.batch_summary) if args.batch_summary
+               else HERE / "output" / "batch_summary.json")
     agg_out.parent.mkdir(parents=True, exist_ok=True)
     agg_out.write_text(json.dumps({
         "total": len(aggregate), "tp": n_tp, "fp": n_fp, "error": n_err,

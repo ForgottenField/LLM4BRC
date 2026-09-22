@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # Clang command building
 # ---------------------------------------------------------------------------
 
-# Standard include paths (same as compile_checker)
+# Standard include paths for the CFG dump invocation
 _CFG_INCLUDE_PATHS = [
     "-I.",
     "-Ibuild",
@@ -72,7 +72,7 @@ _CFG_COMMON_DEFINES = [
     "-DFMT_SHARED",
 ]
 
-# Project-specific config (mirrors compile_checker._PROJECT_CONFIGS)
+# Project-specific include/config overrides
 _CFG_PROJECT_CONFIGS: dict[str, dict] = {
     "aria2": {
         "include_paths": ["src", "."],

@@ -35,7 +35,6 @@ from llm_client.fp_analysis.prompt_templates import (
     POC_GENERATION_SYSTEM_PROMPT,
 )
 from llm_client.fp_analysis.source_context import SourceContextExtractor
-from llm_client.fp_analysis.summary_cache import SummaryCache
 from llm_client.fp_analysis.pdg_augment import augment_pdg_sdg
 from llm_client.fp_analysis.pdg_loader import load_pdg
 from llm_client.fp_analysis.pdg_models import SDG
@@ -46,7 +45,6 @@ from llm_client.fp_analysis.domain_facts import (
 )
 
 from llm_client.fp_analysis.slice_mask import SliceMask
-from llm_client.fp_analysis.iterative_selector import IterativePathSelector
 
 # CFG-based feasibility analysis
 from llm_client.fp_analysis.cfg_feasibility import (
@@ -954,7 +952,6 @@ class FPAnalyzer:
         # is well above 8192 — the budget is ours to set.
         max_tokens: int = 16384,
         output_dir: str | Path = "",
-        cache_root: str | Path = "summary_cache",
         pdg_path: str | Path | None = None,
     ) -> None:
         self._model = model
@@ -966,7 +963,6 @@ class FPAnalyzer:
         self._source_extractor = SourceContextExtractor(
             project_root=self._source_root or None
         )
-        self._summary_cache = SummaryCache(cache_root=cache_root)
         self._sdg: SDG | None = None
 
         # Load PDG if provided
@@ -1623,7 +1619,6 @@ class FPAnalyzer:
         completed: CompletedPath,
         slice_mask: SliceMask | None = None,
         max_rounds: int = 3,
-        selector: IterativePathSelector | None = None,
         segments: list | None = None,
         cfg_cache: dict | None = None,
         hard_constraints: list[str] | None = None,
@@ -1660,7 +1655,6 @@ class FPAnalyzer:
             completed: Completed path constraints from Step 2-3.
             slice_mask: Post-slice retained/removed node tracking.
             max_rounds: Maximum re-selection rounds (default 3).
-            selector: Optional IterativePathSelector for PDG pruning.
             segments: Pre-built segments with optional ``cfg_branch_tree``.
                 If ``None``, segments are created from the parsed report.
             cfg_cache: Optional CFG cache for branch extraction fallback.
