@@ -1,5 +1,12 @@
 # FP 验证案例分析：如何通过「测试用例生成 → LLM 模拟执行 → 多轮反馈」判定 FP
 
+> **历史文档（案例本身仍然有效，机制描述已过时）。** 本文记录的是「模拟执行多轮未触发即把
+> TP 翻转为 FP」这一代机制；该翻转已在后续设计中**移除**——模拟验证现在只产出
+> `VERIFIED/UNVERIFIED` 证据，`POC 路径不一致`只回灌重生成，**永不翻 FP**（见
+> `simulation_verifier.py` 的模块文档与 [`docs/pipeline-stages.md`](pipeline-stages.md) §8）。
+> 两个案例「为什么是 FP」的源码推理依然成立；它们现在由阶段 6/7 的确定性/语义闸门或阶段 9 的
+> 路径空间推广得出。文中的 `verification_flipped_to_fp` 字段在结果 JSON 中已不存在。
+
 > 本文档完整记录两个真实案例 —— `MemoryTest` 与 `XlogTest`，说明它们为何本质是 **False Positive (FP)**，以及验证流程如何通过**多轮测试用例的模拟执行**最终将其成功判定为 FP。
 >
 > 项目：`bug_report_classification`（Clang Static Analyzer 报告的 LLM 辅助 FP 检测 / POC 生成流水线）
@@ -15,7 +22,7 @@
 
 为此新增了「LLM 模拟执行 + 反馈循环」环节：
 
-1. **生成具体测试用例**（复用 `generate_poc_with_compile_fix`，产出可编译 POC）。
+1. **生成具体测试用例**（`FPAnalyzer.generate_poc`，产出 POC 源码；当前设计不再编译它）。
 2. **LLM 模拟执行**：用具体输入逐语句推演 POC 执行，判定 `bug_type` 是否在 `bug_line` 真正触发。
 3. **反馈循环**：若某轮模拟「未触发」，用该轮返回的 `blocking_reason` 让 LLM **细化 POC**（修正输入/前置，试图真正到达并触发 bug），再重新模拟，迭代最多 3 轮。
 4. **判定**：若多轮细化后仍判定无法触发，则**将报告由 TP 翻转为 FP**（`verification_flipped_to_fp: True`），并完整记录每轮 trace 与 blocking reason 作为证据。

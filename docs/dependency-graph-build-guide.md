@@ -17,7 +17,7 @@
 |---|---|---|---|
 | **`pdg_<project>.json`** | 仓库根 | `load_sdg`（`run_path_selection.py:215`）→ 切片 / 分支提取 / 函数归因 | 每个函数的程序依赖图（节点带 `source_line`/`block_id`/`kind`，边有 `control_dep_edges`/`def_use_edges`） |
 | **`cfg_cache/<project>/*.json`** | `cfg_cache/<project>/` | `CFGCacheSet`（`fp_analysis/cfg_cache_set.py`）→ 分段后按路径文件**按需加载并合并** | 每个**编译单元**的全 TU CFG（按 `md5(绝对源路径)` 命名） |
-| **工程配置** | `cfg_parser.py` + `compile_checker.py` | 运行时 `build_cfg_command` / 验证阶段的 POC 编译 | 每个项目的 include / define / force_include |
+| **工程配置** | `cfg_parser.py` 的 `_CFG_PROJECT_CONFIGS` | 运行时 `build_cfg_command` | 每个项目的 include / define / force_include |
 
 顶层 `run_path_selection.py` **不会**在运行时自动构建 PDG 或 CFG cache：
 - PDG 必须预先存在（`load_sdg` 直接读文件）；
@@ -51,7 +51,7 @@
         │
         │  (4)
         ▼
-[cfg_parser.py / compile_checker.py 增 "proj" 配置]  ──►  (5) 冒烟验证
+[cfg_parser._CFG_PROJECT_CONFIGS 增 "proj" 配置]  ──►  (5) 冒烟验证
 ```
 
 - **(1)/(1')** 都吃「源文件 + 每条翻译单元的编译参数」——所以**最上游的单一输入是 compile_commands.json**。
@@ -176,9 +176,9 @@ for rel in ["faiss/impl/index_read.cpp", "..."]:          # 见 4.1 的并集
        "force_includes": [],
    },
    ```
-2. `src/llm_client/fp_analysis/compile_checker.py` → `_PROJECT_CONFIGS`：同样加 faiss 键。
+2. `src/llm_client/fp_analysis/cfg_parser.py` → `_CFG_PROJECT_CONFIGS`：同样加 faiss 键。
 
-`build_cfg_command` 对 `include_paths` 会先尝试 `Path(source_root)/rel_inc` 是否存在再拼 `-I`；`compile_checker` 对 `include_paths` 先试 `Path(project_root)/rel_inc`。二者都应指向能解析 `#include "faiss/..."` 的根目录。
+`build_cfg_command` 对 `include_paths` 会先尝试 `Path(source_root)/rel_inc` 是否存在再拼 `-I`，所以应指向能解析 `#include "faiss/..."` 的根目录。
 
 ---
 
@@ -230,7 +230,6 @@ PROJECTS = {
             "include_paths": [".", "/usr/lib/gcc/x86_64-linux-gnu/10/include"],
             "defines": ["FINTEGER=int"], "force_includes": [],
         },
-        "compile_checker": { ... },   # 同构
         "cmake": {"min": "3.17", "flags": [...]},   # 能 cmake 就自动生成 compile db
     },
     "aria2":  { ... }, "folly": { ... },   # 可回填既有经验
@@ -242,7 +241,7 @@ PROJECTS = {
 2. 逐条 `-fsyntax-only` 验证→剔除失败的→写临时库。
 3. `pdg_builder_local --compile-db ... --output pdg_<proj>.json`。
 4. 对 `cfgs` 每个源文件跑 cfg dump 预热 `cfg_cache/<proj>/`。
-5. 自动把配置 patch 进 `cfg_parser.py`/`compile_checker.py`（或改成读外部 config 而非硬编码）。
+5. 自动把配置 patch 进 `cfg_parser._CFG_PROJECT_CONFIGS`（或改成读外部 config 而非硬编码）。
 6. 校验：PDG 函数数、缓存可载入、目标 bug 函数在册。
 
 ### 7.2 关键取舍 / 难点
@@ -268,6 +267,6 @@ PROJECTS = {
 | `compile_commands.json` | `/tmp/faiss_cc/compile_commands.json`（76 核心 TU，不入库） |
 | `pdg_faiss.json` | 仓库根；37.7MB；13648 函数 |
 | `cfg_cache/faiss/` | 10 个整-TU 缓存（见 4.1 清单） |
-| 工程配置 | `cfg_parser.py` / `compile_checker.py` 均已加 `"faiss"` |
+| 工程配置 | `cfg_parser._CFG_PROJECT_CONFIGS` 已加 `"faiss"` |
 | 冒烟 | 3 份报告端到端跑通；TP 目录 clone_index `operator=` 判 TP 对齐；两份 FP 目录判 TP（已知 v2-TP-bias，非构建问题） |
 | 后续 | 已决定只保留依赖图、不跑 faiss 全量回归；随时可按 §6 命令补跑单份 |
