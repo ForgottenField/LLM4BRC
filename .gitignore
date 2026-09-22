@@ -1,0 +1,29 @@
+# Credentials
+.env
+
+# Rebuildable analysis artifacts (see docs/pipeline-stages.md)
+cfg_cache/
+pdg_*.json
+constraint_cache/
+
+# Run outputs: only tools/ is tracked, output/ is scratch
+output/
+
+# C++ native tooling build products (sources + build.sh are tracked)
+build/
+*.so
+*.o
+*.a
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

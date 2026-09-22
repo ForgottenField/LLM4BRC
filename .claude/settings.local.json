@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(PYTHONPATH=src python -m pytest tests/test_factory.py -q)",
+      "Bash(python -c \"import anthropic, openai\")",
+      "Bash(python3.10 -m pip --version)",
+      "Read(//home/yanghengqin/.local/bin/**)",
+      "Bash(python3.10 -c \"import openai; print\\('openai', openai.__version__\\)\")",
+      "Bash(python3.10 -)",
+      "Bash(cd *)",
+      "Bash(python3.10 -c \"import anthropic; print\\('anthropic', anthropic.__version__\\)\")",
+      "Bash(python3.10 -c \"import pydantic; print\\('pydantic', pydantic.__version__\\)\")",
+      "Bash(python3.10 -c ' *)",
+      "Bash(python3.10 -m py_compile run_path_selection.py)",
+      "Bash(python3.10 run_path_selection.py --help)",
+      "Bash(nohup python3.10 run_path_selection.py --project aria2 --projects-dir ~/csa_reports/project)",
+      "Bash(echo \"started PID $!\")",
+      "Read(//home/yanghengqin/csa_reports/project/folly/reports/FP/**)",
+      "Read(//home/yanghengqin/csa_reports/project/folly/reports/**)"
+    ]
+  }
+}

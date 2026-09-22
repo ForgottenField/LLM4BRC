@@ -1,0 +1,19 @@
+src/network.c:87:5: warning: buffer overflow [WARN_BOF]
+    memcpy(dst, src, len);
+    ^~~~~~~~~~~~~~~~~~~~~~
+The memcpy() function copies 'len' bytes from 'src' to 'dst' without
+checking that 'dst' has sufficient capacity. An attacker could overflow
+the destination buffer by providing a large 'len' value.
+
+src/auth.c:42:10: warning: use of untrusted input [WARN_INPUT]
+    char cmd[256]; sprintf(cmd, "echo %s", user_input);
+         ^~~
+The sprintf() function formats user-controlled input into a command
+string without sanitization. This could allow command injection.
+
+src/config.c:15:3: warning: null pointer dereference [WARN_NULL]
+    strcpy(tgt->name, val);
+    ^~~~~~~~~~~~~~~~~~~~~~
+Pointer 'tgt' may be NULL when this function is called with an empty
+configuration block. Dereferencing a NULL pointer results in undefined
+behavior (typically a segfault).
