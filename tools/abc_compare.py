@@ -23,7 +23,7 @@ must rebuild its segments from the parsed report: ``run_branch_filter`` attaches
 would compare a tree against itself.
 
 Usage:
-    python3.10 output/abc_compare.py <report.html> [more.html ...]
+    python3.10 tools/abc_compare.py <report.html> [more.html ...]
 """
 from __future__ import annotations
 

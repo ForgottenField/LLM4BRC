@@ -10,7 +10,7 @@ is exactly the "extracted path count" question this script answers:
     per segment: function_name | function_file | CFG key found? | branches
 
 Usage:
-    python3.10 output/replay_steps1to6.py <report.html> [more.html ...]
+    python3.10 tools/replay_steps1to6.py <report.html> [more.html ...]
 """
 from __future__ import annotations
 

@@ -2,7 +2,7 @@
 """Summarize a faiss pipeline run: classification accuracy + path-space details.
 
 Usage:
-    python3.10 output/summarize_faiss_eval.py [results_dir]
+    python3.10 tools/summarize_faiss_eval.py [results_dir]
 
 Reads ``output/path_selection_report-*.json`` (written by the default flow, which
 always runs POC verification) and prints one row per report:

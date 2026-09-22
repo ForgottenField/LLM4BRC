@@ -2,14 +2,14 @@
 """Probe the deterministic report self-contradiction check on real reports.
 
 Runs the deterministic stages (1-6) — same harness as
-``output/replay_steps1to6.py``, no LLM — then reports, per report:
+``tools/replay_steps1to6.py``, no LLM — then reports, per report:
 
   * how many (condition, direction) claims the report path yields,
   * which source lines were skipped (ambiguous node/step counts),
   * every self-contradiction found.
 
 Usage:
-    python3.10 output/probe_report_consistency.py <report.html> [more.html ...]
+    python3.10 tools/probe_report_consistency.py <report.html> [more.html ...]
 """
 from __future__ import annotations
 

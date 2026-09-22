@@ -1,19 +1,21 @@
-"""CSA (Clang Static Analyzer) path extraction for POC generation."""
+"""CSA (Clang Static Analyzer) data models.
 
-from llm_client.csa_analysis.errors import (
-    CSAError,
-    CSANotFoundError,
-    SourceFileNotFoundError,
-    CSATimeoutError,
-    PlistParseError,
-    CallGraphBuildError,
-)
+Only the data models live here now: the `BugPath`/`PathEvent` types that the
+report parsers and the FP pipeline consume, and the call-graph models that
+`pdg_loader` builds its SDG on top of.  The old CSA *runner* wrappers
+(`CSARunner`/`PlistParser`/`BugPathCorrelator`/`ProjectScanner`/`EntryPoint`
+synthesis) had no entry point in the live pipeline and were removed; CSA is
+invoked out of tree, and `pdg_<project>.json` / `cfg_cache/` come from the C++
+tooling under `pdg/`, `callgraph/` and `checker/`.
+"""
+
 from llm_client.csa_analysis.models import (
     AnalyzerMode,
     BugFindingRef,
     CSAConfig,
     CSAResult,
     BugPath,
+    EventKind,
     PathEvent,
     CorrelatedResult,
     Confidence,
@@ -22,14 +24,6 @@ from llm_client.csa_analysis.models import (
     ReachabilityTarget,
     ReachabilityResult,
 )
-from llm_client.csa_analysis.runner import CSARunner
-from llm_client.csa_analysis.parser import PlistParser
-from llm_client.csa_analysis.correlator import BugPathCorrelator
-from llm_client.csa_analysis.scanner import (
-    ProjectScanner,
-    CompilationDatabase,
-    discover_source_files,
-)
 from llm_client.csa_analysis.callgraph_models import (
     CallGraph,
     CallGraphNode,
@@ -37,34 +31,19 @@ from llm_client.csa_analysis.callgraph_models import (
     EntryPoint,
     EntryPointResult,
 )
-from llm_client.csa_analysis.callgraph_bridge import (
-    find_entry_points,
-    build_synthetic_callgraph,
-)
 
 __all__ = [
     "AnalyzerMode",
-    "CSAError",
-    "CSANotFoundError",
-    "SourceFileNotFoundError",
-    "CSATimeoutError",
-    "PlistParseError",
-    "CallGraphBuildError",
     "BugFindingRef",
     "CSAConfig",
     "CSAResult",
     "BugPath",
+    "EventKind",
     "PathEvent",
     "CorrelatedResult",
     "Confidence",
     "FileResult",
     "ProjectAnalysisResult",
-    "CSARunner",
-    "PlistParser",
-    "BugPathCorrelator",
-    "ProjectScanner",
-    "CompilationDatabase",
-    "discover_source_files",
     "ReachabilityTarget",
     "ReachabilityResult",
     "CallGraph",
@@ -72,6 +51,4 @@ __all__ = [
     "CallGraphEdge",
     "EntryPoint",
     "EntryPointResult",
-    "find_entry_points",
-    "build_synthetic_callgraph",
 ]
