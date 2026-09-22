@@ -20,9 +20,9 @@ status) but records per-round simulation traces as evidence of how confident
 the TP classification is.
 
 Reuses the host :class:`FPAnalyzer` for LLM plumbing (``_call_llm``,
-``_parse_json_response``, ``_extract_code``, ``_make_compile_checker``,
-``_fix_code_with_llm``) so behaviour stays consistent with the rest of the
-pipeline.
+``_parse_json_response``, ``_extract_code``,
+``_format_selected_branch_blueprint``) so behaviour stays consistent with the
+rest of the pipeline.
 """
 
 from __future__ import annotations

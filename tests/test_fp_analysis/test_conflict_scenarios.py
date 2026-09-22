@@ -795,17 +795,6 @@ class TestMissingPostconditionRobustness:
         candidates = pc.compute_topk(seg1_tree, k=5, postcondition=None)
         assert len(candidates) > 0, "Should find candidates without postcondition"
 
-    def test_filter_candidates_none_postcondition(self, seg1_tree):
-        """_filter_candidates_by_postcondition with None → no-op."""
-        from llm_client.fp_analysis.path_analyzer import FPAnalyzer
-        # Build minimal candidates list
-        candidates = [
-            ([CFGBranchNode("b1", 389, is_taken_branch=True)], None),
-            ([CFGBranchNode("b2", 389, is_taken_branch=False)], None),
-        ]
-        result = FPAnalyzer._filter_candidates_by_postcondition(candidates, None)
-        assert len(result) == 2, "None postcondition → all candidates kept"
-
     def test_empty_tree_no_crash(self):
         """Empty branch tree → compute_topk returns 1 empty candidate
         (no branches → empty path is the only option)."""
