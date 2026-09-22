@@ -4,34 +4,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This repository builds an LLM-assisted **false-positive (FP) detection and proof-of-concept (POC) generation** pipeline for Clang Static Analyzer (CSA) bug reports on C/C++ projects (aria2, folly, wslay). It combines deterministic static analysis (PDG/SDG slicing, CFG branch extraction, constraint checking) with LLM calls (default provider DeepSeek) to decide whether a reported bug path is actually reachable (TP) or a false positive (FP), and when reachable, generates a compilable POC.
+This repository builds an LLM-assisted **false-positive (FP) detection and proof-of-concept (POC) generation** pipeline for Clang Static Analyzer (CSA) bug reports on C/C++ projects (aria2, folly, faiss, wslay). It combines deterministic static analysis (PDG/SDG slicing, CFG branch extraction, constraint checking) with LLM calls (default provider DeepSeek) to decide whether a reported bug path is actually reachable (**TP**), a false positive (**FP**), or undecidable (**UNKNOWN**), and when reachable generates a compilable POC.
+
+**The classification method is documented as an ordered 10-stage pipeline in
+[`docs/pipeline-stages.md`](docs/pipeline-stages.md)** — read it first; this file is the index.
 
 The package is `llm_client`, living under `src/` (no `setup.py`/`pyproject.toml` — imports rely on `src/` being on `PYTHONPATH`).
 
 ## Commands
 
-The package is not installed; tests import `llm_client`, so `src/` must be on the path. Run tests with `PYTHONPATH=src`.
+The package is not installed; tests import `llm_client`, so `src/` must be on the path. Use **`python3.10`** (the default `python3` is older and pytest is installed under 3.10).
 
 ```bash
 # Run all tests
-PYTHONPATH=src python -m pytest tests/
+PYTHONPATH=src python3.10 -m pytest tests/
 
-# Single test file
-PYTHONPATH=src python -m pytest tests/test_fp_analysis/test_conflict_checker.py
+# Single test file / single test
+PYTHONPATH=src python3.10 -m pytest tests/test_fp_analysis/test_conflict_checker.py
+PYTHONPATH=src python3.10 -m pytest tests/test_factory.py::TestProviderFactory::test_create_gpt_provider
 
-# Single test
-PYTHONPATH=src python -m pytest tests/test_factory.py::TestProviderFactory::test_create_gpt_provider
+# Deterministic-stage regression (no LLM) — see docs/pipeline-stages.md §9
+python3.10 tools/replay_steps1to6.py <reports...>
+python3.10 tools/abc_compare.py      <reports...>
+python3.10 tools/probe_report_consistency.py <reports...>
 ```
-
-Note: pytest is not currently on the default `python3`; the test suite's `__pycache__` was built with Python 3.10 + pytest 9.0.3, so use a matching interpreter/venv.
 
 ### Main end-to-end entry point
 
 ```bash
 # Loads DEEPSEEK_API_KEY from ./.env; exits if unset
 python3 run_path_selection.py --report <path/to/report.html>
-python3 run_path_selection.py --report <path> --project project/aria2
-python3 run_path_selection.py --project project/aria2                   # batch: scans reports/{TP,FP}
+python3 run_path_selection.py --report <path> --source-root ~/csa_reports/project/faiss
+python3 run_path_selection.py --project ~/csa_reports/project/faiss   # batch: scans reports/{TP,FP}
 python3 run_path_selection.py --scan-dir /path/to/reports --pdg pdg_faiss.json
 ```
 
@@ -55,35 +59,48 @@ bash src/llm_client/csa_analysis/checker/build.sh
 
 Three analysis subsystems under `src/llm_client/`, plus a top-level orchestration script.
 
-### `run_path_selection.py` (top level)
-The end-to-end pipeline. Order of operations in `main()`:
-1. Parse the CSA HTML report → `ParsedReport` + `bug_path` (`fp_analysis.html_parser`).
-2. Load CFG cache (`cfg_cache/<project>/*.json`) and SDG (`pdg_<project>.json`, built by the C++ PDG builder).
-3. Segment the bug path by control events → `SegmentInfo` list (`cfg_feasibility.segment_path`).
-4. Build a `SliceMask` via PDG backward slicing (`path_seed_extractor`, `slicer`, `slice_mask`).
-5. Assumption feasibility check (`FPAnalyzer.check_assumptions_feasibility`) → hard constraints + state bindings (runs before the branch filter).
-6. Branch filter: CFG branch extraction + 4-layer conflict checking per segment (`cfg_branch_extractor`, `conflict_checker`).
-7. Report self-contradiction gate (`fp_analysis/report_consistency.py`, deterministic, no LLM): joins each reported branch *direction* (an event's `Assuming the condition is true/false`) with the condition *text* of that source line, taken from the segment branch trees. One condition asserted **both** ways on the report's own path, with no write to its variables in between (same function+file, different lines, no **call step** between them — an unmodelled call re-creates globals as fresh symbols — and the line's node/step counts must match; every guard fails closed), means no input can realize the path ⇒ verdict FP, written and returned **before** path selection and POC verification. This is what settles `read_index`-484-1 (`h == fourcc("IHNs")` FALSE at L901 from the short-circuit chain, TRUE at L908) and `read_index`-484-2 (`h == fourcc("INSp")` FALSE at L921, TRUE at L925 inside the `INSf || INSp || INSs` arm) — the two faiss reports it fires on out of 13 probed, both ground-truth FPs, with the TP `clone_index` and the other ten untouched. CSA cannot refute such a pair itself when an operand comes from an out-of-line function — `fourcc` lives in another TU, so its two call results are independent free symbols to the solver. The other consistency layers stay blind to it: the report's step text carries no values (so `_check_constraint_conflict` has nothing to compare), the four-layer `ConflictChecker` never compares a branch against another branch, and the LLM merge check judges the *selected* combination, not the report's path.
-8. Segment-by-segment path selection via the LLM (`FPAnalyzer._select_feasible_path_segments`, conflict-driven). Verdict = TP (path found) or FP.
-9. POC verification (always on): constraint completion → POC generation (`poc_generator`) → LLM correctness audit → simulated execution + feedback loop, which can settle the verdict as FP or UNKNOWN (`simulation_verifier`).
+### `run_path_selection.py` (top level) — the 10-stage pipeline
+
+The end-to-end pipeline. **The authoritative description of the method lives in
+[`docs/pipeline-stages.md`](docs/pipeline-stages.md)** — stage-by-stage inputs, outputs, verdict
+exits, code locations, and the design invariants. Read that before changing any stage.
+The stage index:
+
+| # | Stage | Verdict exit |
+|---|-------|--------------|
+| 1 | Report parsing + project assembly (`_resolve_paths`, `parse_report`, `load_sdg`) | fail-fast on bad source root/PDG |
+| 2 | Path segmentation → `SegmentInfo[]` (`cfg_feasibility.segment_path`) | — |
+| 3 | PDG backward slicing → `SliceMask` (`build_slice_mask`) | — |
+| 4 | Assumption feasibility → `hard_constraints` + state (`check_assumptions_feasibility`) | — |
+| 5 | Branch filter: CFG extraction + 4-layer conflict + A/B/C pruning (`run_branch_filter`) | — |
+| 6 | Deterministic report self-contradiction gate (`report_consistency.py`, no LLM) | **FP** |
+| 7 | Semantic finite-domain gate (`semantic_fp_reason`, LLM, pre-enumeration) | **FP** |
+| 8 | Path-space collection + compression (`collect_path_space`, `classify_branch_relevance`, `reduce_path_space`) | — |
+| 9 | Path selection: whole-path combination enumeration (`run_path_selection`) | FP / TP / UNKNOWN |
+| 10 | POC verification (`_verify_path` → `SimulationVerifier`) | TP / FP / UNKNOWN |
+
+Stages 6 and 7 are the two "conclude FP before enumerating" gates; stage 9's four generalizations
+(slice-compression / structural cause-invariance / leak consensus / exploration aggregation) are
+described in the doc, as is the rule that **a single-path FP never concludes on its own**.
 
 Results JSON is written to `output/path_selection_<report>.json`.
 
-### `bug_analysis/` — general LLM bug-report analysis
-`BugAnalyzer` (`analyzer.py`): detects input format (`format_detector`), builds prompt messages (`prompts`), calls the LLM, and parses the response into structured `BugFinding` objects (`schemas`). Independent of the FP/POC pipeline. Default model `deepseek-v4-pro`.
-
-### `csa_analysis/` — Clang Static Analyzer wrapper
-`CSARunner` invokes `clang++-14`/`scan-build` on source files, `PlistParser` parses `.plist` output, `BugPathCorrelator` correlates findings. Includes C++ plugins (`checker/` reachability, `callgraph/`, `pdg/`) built via their `build.sh` scripts.
+### `csa_analysis/` — C++ native tooling
+C++ plugins (`checker/` reachability, `callgraph/`, `pdg/`) built via their `build.sh` scripts.
+**These are the producers of `pdg_<project>.json` / `cfg_cache/` — keep the sources and build.sh.**
 
 ### `fp_analysis/` — core FP-detection + POC pipeline
-The heart of the repo. `FPAnalyzer` (`path_analyzer.py`, ~3800 lines) orchestrates LLM-driven path selection and POC generation. Supporting modules group by role:
+The heart of the repo. `FPAnalyzer` (`path_analyzer.py`) orchestrates LLM-driven path selection and
+POC generation. Supporting modules group by role (see `docs/pipeline-stages.md` for which stage each
+serves):
 
-- **PDG/SDG + slicing**: `pdg_models`, `pdg_loader`, `pdg_augment`, `slicer`, `slice_mask`, `slice_analyzer`, `path_seed_extractor`, `code_reducer`.
-- **CFG + segmentation**: `cfg_models`, `cfg_parser`, `cfg_feasibility`, `cfg_branch_models`, `cfg_branch_extractor`, `cfg_branch_extractor`.
-- **Conflict/constraint checking**: `conflict_checker`, `conflict_models`, `conflict_learner`, `constraint_miner`, `constraint_models`, `constraint_cache`, `var_relevance`.
-- **Path selection**: `iterative_selector`, `shortest_path`, `context_controller`, `summary_cache`, `function_analyzer`, `function_summary`, `state_lifecycle`.
-- **POC**: `poc_generator`, `compile_checker`.
-- **Parsing**: `html_parser` (CSA HTML report parser).
+- **PDG/SDG + slicing**: `pdg_models`, `pdg_loader`, `pdg_augment`, `slicer`, `slice_mask`, `path_seed_extractor`.
+- **CFG + segmentation**: `cfg_models`, `cfg_parser`, `cfg_feasibility`, `cfg_cache_set`, `cfg_branch_models`, `cfg_branch_extractor`, `condition_extractor`.
+- **Conflict/constraint checking**: `conflict_checker`, `conflict_models`, `conflict_learner`, `constraint_miner`, `constraint_models`, `constraint_cache`, `structural_pruning`.
+- **Path space + selection**: `path_space`, `branch_relevance`, `cause_invariance`, `shortest_path`, `combination_enum`.
+- **Gates**: `report_consistency` (stage 6), `domain_facts` (stage 7 supplement).
+- **Simulation**: `simulation_verifier`.
+- **Parsing/support**: `html_parser`, `source_context`, `lib_knowledge`, `models`, `prompt_templates`.
 
 ### LLM provider layer (`src/llm_client/`)
 Pluggable providers: `base.py` defines the `LLMProvider` ABC + `LLMRequest`/`LLMResponse`/`LLMConfig` dataclasses; `factory.py` maps provider names (`deepseek`, `claude`, `gpt`) to implementations. `errors.py` defines the exception hierarchy (`LLMClientError`, `AuthenticationError`, `RateLimitError`, `TimeoutError`, `LLMProviderError`) — providers MUST raise these, not raw SDK errors. The FP pipeline uses the DeepSeek provider by default (`deepseek-chat`).
@@ -92,8 +109,15 @@ Pluggable providers: `base.py` defines the `LLMProvider` ABC + `LLMRequest`/`LLM
 
 - `pdg_<project>.json` — SDG/PDG produced by the C++ PDG builder.
 - `cfg_cache/<project>/*.json` — per-function CFG caches; auto-resolved by entry function name.
-- `project/<name>/` — source projects with their reports, e.g. `project/folly/reports/FP/*.html` (referenced by `tests/test_fp_analysis/conftest.py`).
-- `output/` — pipeline result JSON (created at runtime).
+- `constraint_cache/` — mined constraint cache.
+- Source projects + their reports live **outside the repo** under `~/csa_reports/project/<name>/`
+  (e.g. `~/csa_reports/project/faiss/reports/FP/*.html`); tests resolve them via `CSA_PROJECTS_DIR`
+  and skip when absent.
+- `output/` — pipeline run products only (`path_selection_*.json`, `poc_*.cpp`, logs, `intermediate/`);
+  gitignored and safe to empty. Reusable harness scripts live in `tools/`.
+
+`cfg_cache/`, `pdg_*.json`, `constraint_cache/` and `output/` are **gitignored** — they are
+rebuildable artifacts, documented in `docs/pipeline-stages.md`.
 
 ## Notes
 
@@ -112,6 +136,7 @@ Pluggable providers: `base.py` defines the `LLMProvider` ABC + `LLMRequest`/`LLM
   - **(B) slice retention** — beyond `shallow_callee_depth` (default 1), a callee is expanded only if `slice_mask.pdg_retained_nodes` kept it. 99.9% of the 484-2 root branches had an unretained callee.
   - **(C) structural guards** — an expansion stack (kills the `read_index` ↔ `read_ivf_header` mutual recursion at `index_read.cpp:443`, which a `nested_callee_name == callee_name` comparison never caught because it compared `faiss::read_index` against the short name); no recursion into callees whose PDG `source_file` is outside `source_root` (their own predicates are kept — they can still contradict a constraint — but their internals never are); and `path_space._MAX_SERIALIZED_DECISIONS` caps how much of each candidate's branch list reaches the result JSON (7.3 GB for one 484-1 run), while `signature` and the `ci_branch_keys` grouping still use the **full** list.
   - **The leaf-sentinel contract**: a callee that is *not* expanded still leaves a node with `callee_name` set, `condition_expr == "→ name()"` and `node_id == "callee_<caller>_<callee>_L<line>"`. `shortest_path` (S/C metrics), `conflict_checker` (`ReturnValueMapper`, CSA postcondition confirmation), `branch_relevance._parse_callee` and `path_space._normalize_call_edge` all read that shape — changing it silently breaks conflict checking. For the same reason a gated callee with no predicates and no calls emits *no* node (`_callee_has_content`), so gating can only ever remove nodes, never add them.
-- `output/replay_steps1to6.py` replays the deterministic stages (1–6, no LLM) for a set of reports and prints per-segment `fn / file / CFG key / branches`. Use it to compare extraction changes; it builds a **fresh `CFGCacheSet` per report** on purpose (a shared merged cache would let one report's TUs change another's answers). `output/abc_compare.py` runs the same stages twice per report (A/B/C off vs on) and prints per-segment node/branch counts plus the whole-path bound — the regression set is 484-2, 484-1, `clone_index` (must stay 2 segments / 4 branches / bound 16), `fourcc`, `IndexFastScan`, `read_VectorTransform`, `test_merge`.
-- The LLM client layer (`llm_client/` top-level) is a reusable library also used by `bug_analysis`; the `fp_analysis`/`csa_analysis` packages build on top of it.
-- Tests are grouped by subsystem under `tests/` (`test_fp_analysis/`, `test_csa_analysis/`, `test_bug_analysis/`), each with its own `conftest.py` and `fixtures/` for sample reports/plists.
+- `tools/replay_steps1to6.py` replays the deterministic stages (1–6, no LLM) for a set of reports and prints per-segment `fn / file / CFG key / branches`. Use it to compare extraction changes; it builds a **fresh `CFGCacheSet` per report** on purpose (a shared merged cache would let one report's TUs change another's answers). `tools/abc_compare.py` runs the same stages twice per report (A/B/C off vs on) and prints per-segment node/branch counts plus the whole-path bound — the regression set is 484-2, 484-1, `clone_index` (must stay 2 segments / 4 branches / bound 16), `fourcc`, `IndexFastScan`, `read_VectorTransform`, `test_merge`. See `docs/pipeline-stages.md` §9 for all four tools.
+- **The design invariants that must survive any refactor are listed in `docs/pipeline-stages.md` §8** (no mode switches, `insufficient` is the conservative default, A/B/C are subtract-only, the leaf-sentinel contract, single-path FP never concludes, the sparse simulation audit, the rendering caps, the 8192 token budget, fail-fast path resolution).
+- The LLM client layer (`llm_client/` top-level) is a reusable library; the `fp_analysis`/`csa_analysis` packages build on top of it.
+- Tests are grouped by subsystem under `tests/` (`test_fp_analysis/`), with its own `conftest.py` and `fixtures/` for sample reports/plists.
