@@ -12,7 +12,7 @@ Everything runs by default — there are no mode switches to pass:
 
 Usage:
     python3 run_path_selection.py --report <path/to/report.html>
-    python3 run_path_selection.py --project project/aria2 --report <path>
+    python3 run_path_selection.py --source-root ~/csa_reports/project/faiss --report <path>
 """
 
 from __future__ import annotations
@@ -112,6 +112,54 @@ from llm_client.fp_analysis.models import (
 from llm_client.fp_analysis.path_analyzer import FPAnalyzer, PathSpaceExhausted
 from llm_client.base import LLMConfig
 from llm_client.factory import ProviderFactory
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════
+# Canonical stage numbering — the single source of truth
+# ═══════════════════════════════════════════════════════════════════════════════════
+#
+# The classification method has exactly TEN ordered stages; the authoritative
+# description of each (inputs, outputs, verdict exits, code locations) is
+# ``docs/pipeline-stages.md``.  Every console banner and every ``verdict_step``
+# string is generated from this table, so the labels can never drift apart again
+# (they previously read 1/2/3/3.5/4/5/5.5/6/6.5/5.5b/7, with "Step 4" reused by
+# two different things and the domain supplement printing "Step 5.5" *after*
+# Step 6).
+#
+# Stage numbers and names are stable; the *keyword phrases* used by
+# ``stage_step`` callers are too — ``tools/summarize_faiss_eval.py`` matches on
+# them (e.g. ``"遍历超限"`` marks a traversal-limit UNKNOWN).
+STAGES: tuple[tuple[int, str], ...] = (
+    (1, "报告解析与工程装配"),
+    (2, "路径分段"),
+    (3, "PDG 反向切片"),
+    (4, "假设可行性"),
+    (5, "分支过滤"),
+    (6, "报告路径自相矛盾"),
+    (7, "语义有限域冲突"),
+    (8, "路径空间收集与压缩"),
+    (9, "路径选择"),
+    (10, "POC 验证与结论"),
+)
+_STAGE_NAMES: dict[int, str] = dict(STAGES)
+
+assert tuple(n for n, _ in STAGES) == tuple(range(1, len(STAGES) + 1))
+
+
+def stage_label(n: int) -> str:
+    """The console/JSON label for a stage, e.g. ``Step 6 报告路径自相矛盾``."""
+    return f"Step {n} {_STAGE_NAMES[n]}"
+
+
+def stage_step(n: int, suffix: str) -> str:
+    """A ``verdict_step`` row: canonical stage prefix + a decisive suffix.
+
+    ``suffix`` names *why* the verdict was reached and is what the eval tooling
+    greps for (``tools/summarize_faiss_eval.py`` matches ``遍历超限``); keep the
+    Chinese keyword phrases in it stable.
+    """
+    sep = "" if suffix.startswith("（") else " "
+    return f"{stage_label(n)}{sep}{suffix}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -578,7 +626,7 @@ def _build_postcondition(segment, parsed_report, source_root: Path) -> Postcondi
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
-# Path selection (Step 4)
+# Path selection (stage 9) — used by process_report and the harness tools
 # ═══════════════════════════════════════════════════════════════════════════════════
 
 
@@ -1037,17 +1085,17 @@ def process_report(args, report_path):
           f"pdg/cfg 缓存在仓库根 pdg_<name>.json + cfg_cache/<name>/ 下)")
     print()
 
-    # ── Step 1: Parse report ──
+    # ── Stage 1: parse the report, then assemble the project data ──
     t0 = time.time()
     parsed_report, bug_path = parse_report(report_path, source_root)
     entry_fn = parsed_report.metadata.function_name
-    print(f"Step 1: Parsed report — {entry_fn} | {parsed_report.metadata.bug_type} "
+    print(f"{stage_label(1)}: Parsed report — {entry_fn} | {parsed_report.metadata.bug_type} "
           f"({len(parsed_report.path_events)} events) [{time.time()-t0:.1f}s]")
 
-    # ── Step 2: Load data ──
+    # ── Stage 1 (cont.): load the SDG + the CFG cache ──
     # The CFG cache is per translation unit, so start from the bug host's own
     # cache and pull in the rest on demand once segmentation reveals which
-    # files the path actually visits (Step 3.5).
+    # files the path actually visits (stage 2 below).
     t0 = time.time()
     cache_set = CFGCacheSet(
         project_name=source_root.name, source_root=str(source_root),
@@ -1064,21 +1112,22 @@ def process_report(args, report_path):
             )
     cfg_cache = cache_set.as_dict()
     sdg = load_sdg(pdg_path)
-    print(f"Step 2: Loaded CFG ({len(cfg_cache)} fn) + SDG ({len(sdg.pdgs)} fn) "
+    print(f"{stage_label(1)}: Loaded CFG ({len(cfg_cache)} fn) + SDG ({len(sdg.pdgs)} fn) "
           f"[{time.time()-t0:.1f}s]")
 
-    # ── Step 3: Segment path ──
+    # ── Stage 2: segment the bug path ──
     t0 = time.time()
     segments = segment_path(parsed_report, sdg=sdg, source_root=str(source_root))
-    print(f"Step 3: Segmented into {len(segments)} segment(s) [{time.time()-t0:.1f}s]")
+    print(f"{stage_label(2)}: Segmented into {len(segments)} segment(s) "
+          f"[{time.time()-t0:.1f}s]")
 
-    # ── Step 3.5: Load the CFG of every file the path crosses ──
-    # ``cfg_cache`` is the live merged view, so these show up for Step 6.
+    # ── Stage 2 (cont.): load the CFG of every file the path crosses ──
+    # ``cfg_cache`` is the live merged view, so these show up for stage 5.
     t0 = time.time()
     new_tus = [seg.function_file for seg in segments
                if seg.function_file and cache_set.ensure(seg.function_file)]
     if new_tus:
-        print(f"Step 3.5: +{len(new_tus)} CFG cache(s) for path files "
+        print(f"{stage_label(2)}: +{len(new_tus)} CFG cache(s) for path files "
               f"({len(cfg_cache)} fn total) [{time.time()-t0:.1f}s]")
 
     # Nothing anywhere: the bug file wasn't a TU and the path's own files are
@@ -1094,7 +1143,7 @@ def process_report(args, report_path):
             cache_set.add_cache_file(fallback)
     cache_set.warn_missing()
 
-    # ── Step 4: Build SliceMask ──
+    # ── Stage 3: build the SliceMask (PDG backward slice) ──
     t0 = time.time()
     file_index = sdg.build_file_index()
     slice_mask, slice_result = build_slice_mask(
@@ -1111,10 +1160,10 @@ def process_report(args, report_path):
     path_annotations = build_dense_path_annotations(
         bug_path, sdg, source_root=str(source_root), file_index=file_index,
     )
-    print(f"Step 4: {len(path_annotations)} CSA branch decision line(s)")
+    print(f"{stage_label(3)}: {len(path_annotations)} CSA branch decision line(s)")
 
 
-    # ── Step 5: Build LLM provider + FPAnalyzer ──
+    # ── LLM provider + FPAnalyzer (infrastructure for stages 4 and 9) ──
     # Created here (before the branch filter) so the assumption-derived state
     # can feed into conflict checking (Layers 1b/1.5), which previously never
     # received any established_state and therefore pruned nothing.
@@ -1131,9 +1180,9 @@ def process_report(args, report_path):
         source_root=str(source_root),
         pdg_path=str(pdg_path),
     )
-    print(f"Step 5: FPAnalyzer ready (model={analyzer._model}) [{time.time()-t0:.1f}s]")
+    print(f"  FPAnalyzer ready (model={analyzer._model}) [{time.time()-t0:.1f}s]")
 
-    # ── Step 5.5: Assumption feasibility check (before branch filter) ──
+    # ── Stage 4: assumption feasibility (runs before the branch filter) ──
     t0 = time.time()
     global_constraints = analyzer._load_global_constraints(
         str(source_root),
@@ -1147,21 +1196,22 @@ def process_report(args, report_path):
     assumption_elapsed = time.time() - t0
     n_hc = len(hard_constraints)
     n_state = len(cumulative_state)
-    print(f"Step 5.5: Assumption check — {n_hc} hard constraint(s), "
+    print(f"{stage_label(4)}: Assumption check — {n_hc} hard constraint(s), "
           f"{n_state} state binding(s) [{assumption_elapsed:.1f}s]")
     for hc in hard_constraints:
         print(f"    🔒 {hc}")
     for var, val in cumulative_state.items():
         print(f"    📎 {var}: {val}")
 
-    # ── Step 6: Branch filter (now seeded with assumption-derived state) ──
+    # ── Stage 5: branch filter (seeded with assumption-derived state) ──
     t0 = time.time()
     branch_results, insufficient_counts = run_branch_filter(
         segments, parsed_report, cfg_cache, sdg, slice_mask, source_root,
         established_state=cumulative_state, cache_set=cache_set,
         path_annotations=path_annotations,
     )
-    print(f"Step 6: Branch filter ({len(branch_results)} segments) [{time.time()-t0:.1f}s]")
+    print(f"{stage_label(5)}: Branch filter ({len(branch_results)} segments) "
+          f"[{time.time()-t0:.1f}s]")
 
     # ── Print branch filter summary ──
     total_b = sum(r["num_branches"] for r in branch_results)
@@ -1170,13 +1220,13 @@ def process_report(args, report_path):
     total_ins = sum(r["num_insufficient"] for r in branch_results)
     print(f"  Branches: {total_b} total | {total_con} consistent | {total_ctr} pruned | {total_ins} insufficient")
 
-    # ── Step 6.5: Report self-contradiction gate (deterministic) ──
+    # ── Stage 6: report self-contradiction gate (deterministic, no LLM) ──
     # The report's OWN path states a direction for every branch condition it
     # walks.  When one condition is asserted BOTH ways on that path, with no
     # write to its variables in between, no input can realize the path: the
     # report is an FP, provable with no path enumeration, no POC and no model
     # call — settled here, ahead of path selection, POC generation and the
-    # simulated execution (the Step 5.5 assumption check is the only LLM call
+    # simulated execution (the stage-4 assumption check is the only LLM call
     # that has run by this point).  CSA cannot refute such a pair itself when an
     # operand comes from an out-of-line function (faiss' `fourcc`): its two call
     # results are independent free symbols to the analyzer's solver, which is
@@ -1194,7 +1244,7 @@ def process_report(args, report_path):
         report_contradictions = []
     if report_contradictions:
         _c0 = report_contradictions[0]
-        print(f"\nStep 6.5: report path self-contradiction — "
+        print(f"\n{stage_label(6)}: report path self-contradiction — "
               f"{len(report_contradictions)} pair(s) "
               f"[{time.time()-t0:.1f}s]")
         for _c in report_contradictions[:3]:
@@ -1247,7 +1297,7 @@ def process_report(args, report_path):
                 ],
             },
             "verdict": "FP",
-            "verdict_step": "Step 6.5 报告路径自相矛盾（同一条件同路径反向）",
+            "verdict_step": stage_step(6, "（同一条件同路径反向）"),
             "verdict_reason": _fp_reason,
             "verdict_steps": [f"报告自相矛盾判定: {_fp_reason}"],
             "total_elapsed_sec": round(time.time() - total_start, 1),
@@ -1257,8 +1307,8 @@ def process_report(args, report_path):
         print(f"Total pipeline time: {time.time() - total_start:.1f}s")
         return _output
 
-    # ── Step 7: Run path selection ──
-    # Inject assumption-derived constraints + state as extra preconditions
+    # ── Stage 7 preamble: inject assumption-derived state as preconditions ──
+    # (the stage-4 state becomes part of the selection prompt in stage 9)
     extra_preconditions: list[str] = []
     if cumulative_state:
         state_lines = "\n".join(
@@ -1269,13 +1319,13 @@ def process_report(args, report_path):
             f"{state_lines}"
         )
 
-    # ── Semantic-constraint supplement: guard-pinned / finite-domain variables ──
+    # ── Stage 7 (supplement, advisory): guard-pinned / finite-domain variables ──
     # CSA (and the tool's own constraint model) treat some variables — e.g. a file-read
     # header discriminator compared against an out-of-line constant factory such as
     # `fourcc("rrot")` in another TU — as able to take *any* value, when source actually
     # pins them to a small, fixed constant set.  Surfacing that to the path-selection and
     # simulation LLM lets it conclude reachability is impossible where CSA saw none.
-    # Phase-1 only: this is advisory prose (not a decisive FP gate).
+    # This half is advisory prose only; the decisive gate is immediately below.
     try:
         target_fns = {
             s.function_name for s in segments if getattr(s, "function_name", "")
@@ -1293,15 +1343,15 @@ def process_report(args, report_path):
             # Also stash on the analyzer so the simulation auditor (reuses this same
             # FPAnalyzer) can append the facts to its own prompt (see simulate_execution).
             analyzer._domain_facts_text = fact_text
-            print(f"Step 5.5: domain supplement — {len(domain_facts)} guard-pinned "
+            print(f"{stage_label(7)}: domain supplement — {len(domain_facts)} guard-pinned "
                   f"variable fact(s) surfaced to LLM")
             for df in domain_facts:
                 ffn = df.function_name.split("::")[-1] or df.function_name
                 print(f"    🎯 {df.variable} ({ffn}): {len(df.folded)} distinct constants")
     except Exception as e:  # noqa: BLE001 — best-effort supplement, never fatal
-        print(f"Step 5.5: domain supplement skipped ({e})")
+        print(f"{stage_label(7)}: domain supplement skipped ({e})")
 
-    # ── Step 5.5b: Decisive semantic finite-domain conflict gate (pre-enumeration) ──
+    # ── Stage 7: decisive semantic finite-domain conflict gate (pre-enumeration) ──
     # Before enumerating the (possibly huge) path space, ask the LLM whether the
     # reported path forces a guard-pinned / finite-domain variable (e.g. a fourcc
     # tag `h`, which CSA treats as free because `fourcc` is an opaque/out-of-line
@@ -1336,7 +1386,7 @@ def process_report(args, report_path):
                 "reason": semantic_fp_reason,
             },
             "verdict": "FP",
-            "verdict_step": "Step 5.5b 语义有限域冲突（约束补全，枚举前判定）",
+            "verdict_step": stage_step(7, "（约束补全，枚举前判定）"),
             "verdict_reason": semantic_fp_reason,
             "verdict_steps": [f"约束补全判定: {semantic_fp_reason}"],
             "total_elapsed_sec": round(time.time() - total_start, 1),
@@ -1353,7 +1403,7 @@ def process_report(args, report_path):
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'='*70}")
-    print("PATH SELECTION (Step 4 of feasibility-driven pipeline)")
+    print(stage_label(8))
     print(f"{'='*70}")
 
     # ── Path traversal with a third outcome (UNKNOWN).  When a selected path's
@@ -1452,6 +1502,9 @@ def process_report(args, report_path):
 
     combo = None
     combo_sig = None
+    print(f"\n{'='*70}")
+    print(stage_label(9))
+    print(f"{'='*70}")
     for attempt in range(1, loop_attempts + 1):
         print(f"\n── Path-selection attempt {attempt}/{loop_attempts} "
               f"(blocked paths: {len(blocked_paths)})"
@@ -1489,7 +1542,7 @@ def process_report(args, report_path):
                 # route to the bounded-exploration aggregation.
                 print(f"  attempt {attempt}: ⚠️ 全部整路径组合已探索 → 交由探索聚合判定")
                 verdict_steps.append(
-                    f"Step 7 attempt {attempt} → 全部整路径组合已探索，交由路径探索聚合判定"
+                    f"{stage_label(9)} attempt {attempt} → 全部整路径组合已探索，交由路径探索聚合判定"
                 )
                 break  # verdict stays None → post-loop aggregation
             selections, ps_stats = run_path_selection(
@@ -1514,7 +1567,7 @@ def process_report(args, report_path):
                     "final_reason": "组合级全局冲突（该整路径组合不可行）",
                 })
                 verdict_steps.append(
-                    f"Step 7 attempt {attempt} → 组合 {combo} 全局不可行，"
+                    f"{stage_label(9)} attempt {attempt} → 组合 {combo} 全局不可行，"
                     f"屏蔽该整路径并继续枚举其它组合"
                 )
                 print(f"  attempt {attempt}: ⚠️ 组合 {combo} 全局不可行 → 屏蔽并继续枚举 "
@@ -1530,14 +1583,14 @@ def process_report(args, report_path):
                 print(f"  attempt {attempt}: ⚠️ 路径空间已穷尽（无新的不同组合）"
                       f" → 交由探索聚合判定")
                 verdict_steps.append(
-                    f"Step 7 attempt {attempt} → 路径空间已穷尽，交由路径探索聚合判定"
+                    f"{stage_label(9)} attempt {attempt} → 路径空间已穷尽，交由路径探索聚合判定"
                 )
                 break  # verdict stays None → post-loop aggregation
             # Genuine conflict-based infeasibility (conflict checker / stuck):
             # no globally-consistent feasible path exists → FP (sound).
-            final_step = "Step 7 路径选择"
+            final_step = stage_label(9)
             final_reason = ps_stats.get("result", "未找到全局一致可行路径")
-            verdict_steps.append(f"Step 7 路径选择 → {final_reason}（FP）")
+            verdict_steps.append(f"{stage_label(9)} → {final_reason}（FP）")
             verdict = "FP"
             break
 
@@ -1584,14 +1637,14 @@ def process_report(args, report_path):
                 blocked_paths.append(sig)
                 leak_tp_reasons.append(vres.get("final_reason") or "")
                 verdict_steps.append(
-                    f"Step 7 attempt {attempt} → leak 层判定 TP，屏蔽该路径并继续探索"
+                    f"{stage_label(9)} attempt {attempt} → leak 层判定 TP，屏蔽该路径并继续探索"
                     f"以求一致（leak 判定为整函数级结论，不由单次尝试定案）"
                 )
                 print(f"  attempt {attempt}: ✅ leak 层判定 TP → 屏蔽该路径并继续探索 "
                       f"以验证跨路径一致 (blocked={len(blocked_paths)})")
                 poc_result = None
                 continue
-            final_step = "Step 7d 模拟执行反馈"
+            final_step = stage_step(10, "模拟执行反馈")
             # Every verdict owns its reason (see `_tp_verdict_reason`): a TP row must
             # never inherit an earlier attempt's FP/leak-FP reasoning.
             final_reason = vres.get("final_reason") or _tp_verdict_reason(
@@ -1599,9 +1652,9 @@ def process_report(args, report_path):
                 round_reason=_last_round_reason(vres.get("sim_res")),
             )
             verdict_steps.append(
-                "Step 7d 模拟执行反馈 → leak 层一致性判定 TP（多路径一致）"
+                stage_step(10, "模拟执行反馈 → leak 层一致性判定 TP（多路径一致）")
                 if leak_v == "tp" else
-                "Step 7d 模拟执行反馈 → 测试用例模拟执行判定触发 bug（TP）"
+                stage_step(10, "模拟执行反馈 → 测试用例模拟执行判定触发 bug（TP）")
             )
             verdict = "TP"
             break
@@ -1623,10 +1676,11 @@ def process_report(args, report_path):
                 fp_observations.append({
                     "signature": sig, "final_reason": final_reason,
                 })
-                final_step = "Step 7 路径空间压缩推广"
+                final_step = stage_step(9, "路径空间压缩推广")
                 verdict_steps.append(
-                    f"Step 7 路径空间压缩推广 → 枚举分支全部根因无关"
-                    f"（切片压缩 whole-path bound→1），该路径判定推广到整个路径空间 → FP"
+                    stage_step(9, "路径空间压缩推广 → 枚举分支全部根因无关"
+                                  "（切片压缩 whole-path bound→1），"
+                                  "该路径判定推广到整个路径空间 → FP")
                 )
                 ps_stats["generalized_fp"] = True
                 verdict = "FP"
@@ -1666,11 +1720,12 @@ def process_report(args, report_path):
                     slice_relevance["node_relevance"], var,
                     truncated=slice_truncated, bug_file=bug_file,
                 ):
-                    final_step = "Step 7 结构性FP根因不变性推广"
+                    final_step = stage_step(9, "结构性FP根因不变性推广")
                     verdict_steps.append(
-                        f"Step 7 结构性FP根因不变性推广 → 决定性结构性 FP（矛盾在 report "
-                        f"级 CSA 路径），相关分支不写根因指针 {var} 且不随组合变化 → "
-                        f"推广到整个相关路径空间 → FP"
+                        stage_step(9, "结构性FP根因不变性推广 → 决定性结构性 FP"
+                                      "（矛盾在 report 级 CSA 路径），"
+                                      f"相关分支不写根因指针 {var} 且不随组合变化 → "
+                                      "推广到整个相关路径空间 → FP")
                     )
                     ps_stats["structural_generalized_fp"] = True
                     verdict = "FP"
@@ -1694,7 +1749,7 @@ def process_report(args, report_path):
                 "final_reason": final_reason,
             })
             verdict_steps.append(
-                f"Step 7 attempt {attempt} → 模拟执行判定单条路径 FP，"
+                f"{stage_label(9)} attempt {attempt} → 模拟执行判定单条路径 FP，"
                 f"屏蔽该路径({sig})并重选其它可行路径继续探索"
             )
             print(f"  attempt {attempt}: ❌ 单路径判定 FP → 屏蔽该路径并探索其它路径 "
@@ -1706,8 +1761,8 @@ def process_report(args, report_path):
         if concl is None:
             # Verification errored (environmental, not a classification verdict):
             # keep the found path as TP (unverified), matching prior behavior.
-            final_step = "Step 7 路径选择"
-            verdict_steps.append("Step 7 路径选择 → 找到全局一致可行路径（TP；验证出错未确认）")
+            final_step = stage_label(9)
+            verdict_steps.append(f"{stage_label(9)} → 找到全局一致可行路径（TP；验证出错未确认）")
             verdict = "TP"
             break
 
@@ -1720,7 +1775,7 @@ def process_report(args, report_path):
             blocked_paths.append(sig)
             saw_unresolved = True
             verdict_steps.append(
-                f"Step 7 attempt {attempt} → 模拟执行冲突/无法触发，放弃并屏蔽该路径，重试"
+                f"{stage_label(9)} attempt {attempt} → 模拟执行冲突/无法触发，放弃并屏蔽该路径，重试"
             )
             print(f"  attempt {attempt}: ⚠️ 模拟执行冲突(unresolved) → 放弃该路径并重试 "
                   f"(blocked={len(blocked_paths)})")
@@ -1771,14 +1826,15 @@ def process_report(args, report_path):
                 f"leak 层跨路径判定自相矛盾（TP {len(leak_tp_reasons)} 次 / "
                 f"FP {len(leak_fp_reasons)} 次）"
             )
-            verdict_steps.append(f"Step 7 leak 层一致性 → {leak_note}，该层证据作废")
+            verdict_steps.append(
+                stage_step(9, f"leak 层一致性 → {leak_note}，该层证据作废"))
             print(f"  ⚠️ {leak_note} → leak 层证据作废，交由路径空间聚合判定")
         if (
             not leak_tp_reasons
             and len(leak_fp_reasons) >= min_witnesses
         ):
             verdict = "FP"
-            final_step = "Step 7 leak 层一致性推广"
+            final_step = stage_step(9, "leak 层一致性推广")
             final_reason = (
                 f"leak 层在 {len(leak_fp_reasons)} 条不同可行路径上一致判定 FP："
                 f"对象在其 ownership chain 上被释放/移交 owner（或仅在损坏输入下 abandon），"
@@ -1786,20 +1842,21 @@ def process_report(args, report_path):
                 f"依据：{leak_fp_reasons[0][:300]}"
             )
             verdict_steps.append(
-                f"Step 7 leak 层一致性推广 → {len(leak_fp_reasons)} 条路径一致判定 FP → FP"
+                stage_step(9, f"leak 层一致性推广 → "
+                              f"{len(leak_fp_reasons)} 条路径一致判定 FP → FP")
             )
             ps_stats["leak_consensus_fp"] = True
             print(f"  ❌ leak 层一致性推广：{len(leak_fp_reasons)} 条路径一致判定 FP → FP")
         elif fp_observations and not saw_unresolved and full_space_explore:
             verdict = "FP"
-            final_step = "Step 7 路径探索聚合"
+            final_step = stage_step(9, "路径探索聚合")
             final_reason = (
                 f"全空间探索（压缩相关空间穷尽）: 已探索 {len(fp_observations)} 条不同可行路径，"
                 f"均模拟判定为决定性 FP，整个压缩路径空间无可行解 → FP"
             )
             verdict_steps.append(
-                f"Step 7 路径探索聚合 → 压缩相关路径空间已穷尽，"
-                f"已探索 {len(fp_observations)} 条路径均判定 FP → FP"
+                stage_step(9, f"路径探索聚合 → 压缩相关路径空间已穷尽，"
+                              f"已探索 {len(fp_observations)} 条路径均判定 FP → FP")
             )
         else:
             if not full_space_explore:
@@ -1811,13 +1868,14 @@ def process_report(args, report_path):
             if leak_contradicted:
                 undecided += f"；{leak_note}"
             verdict = "UNKNOWN"
-            final_step = "Step 7 路径遍历超限"
+            final_step = stage_step(9, "路径遍历超限")
             final_reason = (
                 f"{undecided}；未穷举的可行空间中仍可能存在可行解，"
                 f"无法排除路径空间存在 TP，返回 UNKNOWN"
             )
             verdict_steps.append(
-                f"Step 7 路径遍历超限 → UNKNOWN（{undecided}，无法排除未探索空间的可行解）"
+                stage_step(9, f"路径遍历超限 → UNKNOWN"
+                              f"（{undecided}，无法排除未探索空间的可行解）")
             )
 
     # ── Print results ──
