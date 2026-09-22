@@ -2,23 +2,21 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from llm_client.fp_analysis.source_context import SourceContextExtractor
 
 
 @pytest.fixture
-def extractor() -> SourceContextExtractor:
-    return SourceContextExtractor(project_root="project/aria2")
+def extractor(projects_dir) -> SourceContextExtractor:
+    return SourceContextExtractor(project_root=projects_dir / "aria2")
 
 
 class TestExtractFunctionBody:
-    def test_extract_single_line_signature(self, extractor: SourceContextExtractor):
+    def test_extract_single_line_signature(self, extractor: SourceContextExtractor, wslay_lib):
         """wslay_queue_push has signature and '{' on the same line."""
         body = extractor.extract_function_body(
-            "project/aria2/deps/wslay/lib/wslay_queue.c",
+            str(wslay_lib / "wslay_queue.c"),
             "wslay_queue_push",
         )
         assert body is not None
@@ -26,10 +24,10 @@ class TestExtractFunctionBody:
         assert "struct wslay_queue_cell" in body
         assert body.rstrip().endswith("}")
 
-    def test_extract_multi_line_signature(self, extractor: SourceContextExtractor):
+    def test_extract_multi_line_signature(self, extractor: SourceContextExtractor, wslay_lib):
         """wslay_event_omsg_fragmented_init has multi-line signature."""
         body = extractor.extract_function_body(
-            "project/aria2/deps/wslay/lib/wslay_event.c",
+            str(wslay_lib / "wslay_event.c"),
             "wslay_event_omsg_fragmented_init",
         )
         assert body is not None
@@ -37,18 +35,18 @@ class TestExtractFunctionBody:
         assert "omsg" in body
         assert body.rstrip().endswith("}")
 
-    def test_extract_byte_chunk_init(self, extractor: SourceContextExtractor):
+    def test_extract_byte_chunk_init(self, extractor: SourceContextExtractor, wslay_lib):
         body = extractor.extract_function_body(
-            "project/aria2/deps/wslay/lib/wslay_event.c",
+            str(wslay_lib / "wslay_event.c"),
             "wslay_event_byte_chunk_init",
         )
         assert body is not None
         assert "wslay_event_byte_chunk_init" in body
         assert "malloc" in body or "*chunk" in body
 
-    def test_function_not_found(self, extractor: SourceContextExtractor):
+    def test_function_not_found(self, extractor: SourceContextExtractor, wslay_lib):
         body = extractor.extract_function_body(
-            "project/aria2/deps/wslay/lib/wslay_queue.c",
+            str(wslay_lib / "wslay_queue.c"),
             "nonexistent_function_xyz",
         )
         assert body is None
@@ -62,7 +60,7 @@ class TestExtractFunctionBody:
 
 
 class TestFindFunctionDefinition:
-    def test_find_in_project(self, extractor: SourceContextExtractor):
+    def test_find_in_project(self, extractor: SourceContextExtractor, wslay_lib):
         file_path, body = extractor.find_function_definition("wslay_queue_push")
         assert file_path is not None
         assert "wslay_queue.c" in file_path
@@ -76,13 +74,10 @@ class TestFindFunctionDefinition:
         assert file_path is None
         assert body is None
 
-    def test_find_with_custom_search_roots(self, extractor: SourceContextExtractor):
-        from pathlib import Path
-
-        root = Path("project/aria2/deps/wslay/lib")
+    def test_find_with_custom_search_roots(self, extractor: SourceContextExtractor, wslay_lib):
         file_path, body = extractor.find_function_definition(
             "wslay_queue_push",
-            search_roots=[root],
+            search_roots=[wslay_lib],
         )
         assert file_path is not None
         assert body is not None

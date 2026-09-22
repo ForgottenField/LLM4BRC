@@ -5,12 +5,11 @@ from __future__ import annotations
 import pytest
 from llm_client.fp_analysis.cfg_branch_extractor import CFGBranchExtractor
 from llm_client.fp_analysis.cfg_branch_models import (
-    BranchTag,
-    CFGBranchNode,
     CFGBranchTree,
     Postcondition,
 )
 from llm_client.fp_analysis.cfg_models import CFGBlock, CFGFunction
+from llm_client.fp_analysis.pdg_models import ControlDepEdge, FunctionPDG, PDGNode
 from llm_client.fp_analysis.slice_mask import SliceMask
 
 
@@ -140,13 +139,19 @@ def mock_slice_mask() -> SliceMask:
 
 
 class MockSDG:
-    """Minimal SDG stub for testing."""
+    """Minimal SDG stub for testing.
+
+    ``pdgs`` is the same attribute the real :class:`SDG` exposes, and the three
+    accessors the extractor uses (``get_pdg``, ``_resolve_pdg``,
+    ``_get_pdg_call_index``) all read *that* dict — so a stub with no PDG data
+    takes the CFG fallback, and one with PDG data takes the PDG path.
+    """
 
     def __init__(self):
-        self._pdgs: dict[str, object] = {}
+        self.pdgs: dict[str, FunctionPDG] = {}
 
     def get_pdg(self, fn_name: str):
-        return self._pdgs.get(fn_name)
+        return self.pdgs.get(fn_name)
 
 
 @pytest.fixture
@@ -233,154 +238,50 @@ class TestExtractorBasicIf:
         assert any(c for c in conditions)
 
 
-class TestExtractorFullExpansion:
-    """⛔ RED: Full expansion — all callees extracted regardless of return var."""
-
-    def test_callee_extracted_when_return_unrelated(
-        self, mock_cfg_cache, mock_slice_mask, mock_sdg,
-    ):
-        """Callee IS extracted even when return var doesn't match postcondition.
-
-        Uses line range covering B2 (L571-L572) which contains the
-        wslay_frame_recv call. Full expansion ensures the callee is
-        extracted regardless of postcondition variable mismatch: the
-        postcondition is 'msg_length > 0' but the return var is 'r'.
-        """
-        unrelated_pc = Postcondition(
-            function_name="wslay_event_recv",
-            source_line=575,
-            condition_expr="msg_length > 0",
-            branch_taken=True,
-        )
-        extractor = CFGBranchExtractor(mock_cfg_cache, mock_sdg, mock_slice_mask)
-        tree = extractor.extract(
-            segment_index=2,
-            function_name="wslay_event_recv",
-            line_start=570,  # Covers B2 (L571-L572) where wslay_frame_recv is called
-            line_end=575,
-            postcondition=unrelated_pc,
-        )
-        # Full expansion: callee should be extracted even though 'r' != 'msg_length'
-        callee_nodes = _count_by_depth(tree, min_depth=1)
-        assert callee_nodes > 0, (
-            "Full expansion: callee should be extracted even when return var "
-            "doesn't match postcondition variable"
-        )
-
-    def test_callee_extracted_void_function(self, mock_cfg_cache, mock_slice_mask, mock_sdg):
-        """Void function calls (no return var) are also expanded."""
-        unrelated_pc = Postcondition(
-            function_name="wslay_event_recv",
-            source_line=600,
-            condition_expr="msg_length > 0",
-            branch_taken=True,
-        )
-        # Create a mock CFG that includes a void function call block
-        mock_cfg_cache["wslay_event_recv"].blocks["B10"] = _make_cfg_block(
-            "B10",
-            ["  580: log_debug(ctx, \"processing msg\")"],
-            succs=["B11"],
-        )
-        mock_cfg_cache["wslay_event_recv"].blocks["B11"] = _make_cfg_block(
-            "B11", [], succs=["B12"],
-        )
-        # Add log_debug to cfg_cache
-        mock_cfg_cache["log_debug"] = CFGFunction(
-            function_name="log_debug",
-            blocks={
-                "ld_B1": _make_cfg_block(
-                    "ld_B1", [],
-                    terminator="if [ld_B1.1] (BinaryOperator) debug_enabled > 0",
-                    succs=["ld_B2", "ld_B3"],
-                ),
-                "ld_B2": _make_cfg_block("ld_B2", ["printf(...)"]),
-                "ld_B3": _make_cfg_block("ld_B3", [], label="EXIT"),
-            },
-            entry_block_id="ld_B1",
-        )
-        # Also add B10 to mask
-        mock_cfg_mask = SliceMask(
-            pdg_retained_nodes={"wslay_event_recv": {"S_570", "S_571", "S_572", "S_573", "S_580"}},
-            cfg_retained_blocks={"wslay_event_recv": {1, 2, 3, 10, 11, 12, 13}},
-        )
-        extractor = CFGBranchExtractor(mock_cfg_cache, mock_sdg, mock_cfg_mask)
-        tree = extractor.extract(
-            segment_index=3,
-            function_name="wslay_event_recv",
-            line_start=575,
-            line_end=580,
-            postcondition=unrelated_pc,
-        )
-        # Even void function log_debug (no return var) should be expanded
-        assert tree.num_branches > 0
-
-
 class TestExtractorCalleeExtraction:
-    """Cross-procedural callee CFG extraction."""
+    """Cross-procedural expansion on the PDG path (the live mechanism).
 
-    def test_callee_extracted_when_return_matches_postcondition(
-        self, mock_cfg_cache, mock_slice_mask, mock_sdg,
-        segment0_postcondition,
-    ):
-        """wslay_frame_recv should be extracted because 'r' is postcondition var."""
-        extractor = CFGBranchExtractor(mock_cfg_cache, mock_sdg, mock_slice_mask)
+    Callee discovery and the callee's own predicates both come from the SDG:
+    the segment's PDG must carry an ``is_call`` node (that is what
+    ``_find_calls_in_pdg_range`` reads) and the callee's PDG a
+    control-dependence source for its predicates.  How far into the callee the
+    walk may descend — slice-retention (B) and the recursion/env guards (C) —
+    is covered by ``test_path_reachability.TestSliceGating``.
+    """
+
+    def test_pdg_path_expands_the_callee_at_depth_one(self):
+        callee = FunctionPDG(
+            function_name="deep", source_file="/p/deep.cpp",
+            nodes={"D_5": PDGNode(id="D_5", kind="binary_op", expression="k > 0",
+                                  source_line=5, block_id=1)},
+            control_dep_edges=[ControlDepEdge(source_id="D_5", target_id="D_5")],
+        )
+        caller = FunctionPDG(
+            function_name="probe", source_file="/p/probe.cpp",
+            nodes={"C_10": PDGNode(id="C_10", kind="call_expr", expression="deep()",
+                                   source_line=10, block_id=1, is_call=True,
+                                   callee="deep")},
+            control_dep_edges=[ControlDepEdge(source_id="C_10", target_id="C_10")],
+        )
+        sdg = MockSDG()
+        sdg.pdgs = {"probe": caller, "deep": callee}
+        extractor = CFGBranchExtractor({}, sdg, SliceMask())
         tree = extractor.extract(
             segment_index=0,
-            function_name="wslay_event_recv",
-            line_start=566,
-            line_end=573,
-            postcondition=segment0_postcondition,
-        )
-        # Count nodes with call_depth > 0 (callee branches)
-        callee_nodes = _count_by_depth(tree, min_depth=1)
-        assert callee_nodes > 0, (
-            "Expected callee CFG nodes (depth>=1) to be extracted "
-            "when return value matches postcondition variable"
+            function_name="probe",
+            line_start=10,
+            line_end=12,
+            postcondition=Postcondition("probe", 12, "k > 0", True),
         )
 
-    def test_callee_extracted_when_return_unrelated(
-        self, mock_cfg_cache, mock_slice_mask, mock_sdg,
-    ):
-        """🟢 GREEN: Callee IS extracted even when return var doesn't match.
-
-        Uses line range covering B2 (L571-L572) where wslay_frame_recv is called.
-        """
-        unrelated_pc = Postcondition(
-            function_name="wslay_event_recv",
-            source_line=575,
-            condition_expr="msg_length > 0",
-            branch_taken=True,
+        sentinels = [n for n in tree.root_branches if n.callee_name == "deep"]
+        assert len(sentinels) == 1, (
+            "the call site in the segment's PDG must yield a callee sentinel"
         )
-        extractor = CFGBranchExtractor(mock_cfg_cache, mock_sdg, mock_slice_mask)
-        tree = extractor.extract(
-            segment_index=2,
-            function_name="wslay_event_recv",
-            line_start=570,
-            line_end=575,
-            postcondition=unrelated_pc,
+        assert sentinels[0].condition_expr == "→ deep()"
+        assert [c.call_depth for c in sentinels[0].children] == [1], (
+            "the callee's own predicates are extracted one level deeper"
         )
-        callee_nodes = _count_by_depth(tree, min_depth=1)
-        assert callee_nodes > 0, (
-            "Full expansion: callee should be extracted even when return var "
-            "doesn't match postcondition variable"
-        )
-
-    def test_callee_depth_increments(
-        self, mock_cfg_cache, mock_slice_mask, mock_sdg,
-        segment0_postcondition,
-    ):
-        """Callee branches should have call_depth=1."""
-        extractor = CFGBranchExtractor(mock_cfg_cache, mock_sdg, mock_slice_mask)
-        tree = extractor.extract(
-            segment_index=0,
-            function_name="wslay_event_recv",
-            line_start=566,
-            line_end=573,
-            postcondition=segment0_postcondition,
-        )
-        # Check that at least one callee node has depth=1
-        has_depth1 = _has_depth(tree, 1)
-        assert has_depth1, "Expected at least one branch with call_depth=1"
 
     def test_max_depth_limit(
         self, mock_cfg_cache, mock_slice_mask, mock_sdg,
@@ -489,12 +390,11 @@ class TestElementReferenceResolution:
         and populate both condition_expr (raw) and resolved_expr (human-readable).
         """
         extractor = CFGBranchExtractor(clang_cache, MockSDG(), SliceMask())
-        pc = Postcondition("wslay_event_recv", 100, "r >= 0", True)
         cfg = clang_cache["wslay_event_recv"]
         # B6 is a branch block (terminator="if [B6.15]")
         node = extractor._extract_from_block(
             cfg=cfg, block_id="B6", fn_name="wslay_event_recv",
-            depth=0, parent_call=None, postcondition=pc,
+            depth=0, parent_call=None,
         )
         assert node is not None
         # condition_expr should still be element-reference form
@@ -618,11 +518,10 @@ class TestCrossBlockResolution:
     def test_branch_extraction_with_cross_block(self, cc_cache):
         """_extract_from_block on B5 populates resolved_expr for cross-block ref."""
         extractor = CFGBranchExtractor(cc_cache, MockSDG(), SliceMask())
-        pc = Postcondition("wslay_event_recv", 100, "r >= 0", True)
         cfg = cc_cache["wslay_event_recv"]
         node = extractor._extract_from_block(
             cfg=cfg, block_id="B5", fn_name="wslay_event_recv",
-            depth=0, parent_call=None, postcondition=pc,
+            depth=0, parent_call=None,
         )
         assert node is not None
         assert node.resolved_expr != "", f"resolved_expr should not be empty, got '{node.resolved_expr}'"
@@ -766,113 +665,3 @@ class TestCallGraphResolution:
         assert cfg is None
 
     # ── End-to-end: extraction triggers CG resolution ──────────────────
-
-    @pytest.fixture
-    def cfg_with_call_in_block(self) -> dict:
-        """CFG with a block containing a function call statement."""
-        from llm_client.fp_analysis.cfg_models import CFGFunction, CFGBlock
-        return {
-            "caller_fn": CFGFunction(
-                function_name="caller_fn",
-                source_file="test.c",
-                blocks={
-                    "B1": CFGBlock(
-                        block_id="B1",
-                        statements=[
-                            "L10: r = callee_fn(arg1, arg2)",
-                        ],
-                        successors=["B2"],
-                    ),
-                    "B2": CFGBlock(
-                        block_id="B2",
-                        statements=[],
-                        terminator="if [B2.1] (BinaryOperator) r >= 0",
-                        successors=["B3", "B4"],
-                    ),
-                    "B3": CFGBlock(block_id="B3", statements=[]),
-                    "B4": CFGBlock(block_id="B4", statements=[""], label="EXIT"),
-                },
-                entry_block_id="B1",
-            ),
-            "callee_fn": CFGFunction(
-                function_name="callee_fn",
-                source_file="test.c",
-                blocks={
-                    "C1": CFGBlock(
-                        block_id="C1",
-                        statements=[],
-                        terminator="if [C1.1] (BinaryOperator) x == 0",
-                        succs=["C2", "C3"],
-                    ),
-                    "C2": CFGBlock(block_id="C2", statements=[]),
-                    "C3": CFGBlock(block_id="C3", statements=[""], label="EXIT"),
-                },
-                entry_block_id="C1",
-            ),
-        }
-
-    @pytest.fixture
-    def sdg_with_call_cg(self) -> object:
-        """SDG with CG that resolves caller_fn → callee_fn."""
-        from llm_client.csa_analysis.callgraph_models import CallGraph
-        cg = CallGraph.from_dict({
-            "functions": {
-                "caller_fn": {"file": "test.c", "line": 1},
-                "callee_fn": {"file": "test.c", "line": 20},
-            },
-            "calls": [
-                {"caller": "caller_fn", "callee": "callee_fn",
-                 "file": "test.c", "line": 10},
-            ],
-        })
-        sdg = MockSDG()
-        sdg.callgraph = cg
-        return sdg
-
-    def test_callee_extracted_via_cg(
-        self, cfg_with_call_in_block, sdg_with_call_cg,
-    ):
-        """_extract_callees_from_block resolves callee CFG via CG."""
-        ext = CFGBranchExtractor(
-            cfg_with_call_in_block, sdg_with_call_cg, SliceMask(),
-        )
-        pc = Postcondition("caller_fn", 11, "r >= 0", True)
-        cfg = cfg_with_call_in_block["caller_fn"]
-        callees = ext._extract_callees_from_block(
-            cfg=cfg, block_id="B1", fn_name="caller_fn",
-            depth=0, postcondition=pc,
-        )
-        # Should find the callee branch inside callee_fn
-        assert len(callees) > 0
-        assert callees[0].callee_name == "callee_fn"
-        assert len(callees[0].children) > 0  # callee's internal branches
-
-
-def _count_by_depth(tree: CFGBranchTree, min_depth: int) -> int:
-    """Count branch nodes with call_depth >= min_depth."""
-    count = 0
-
-    def _walk(nodes):
-        nonlocal count
-        for n in nodes:
-            if n.call_depth >= min_depth:
-                count += 1
-            _walk(n.children)
-
-    _walk(tree.root_branches)
-    return count
-
-
-def _has_depth(tree: CFGBranchTree, target_depth: int) -> bool:
-    """Check if any node has the exact call_depth."""
-    found = False
-
-    def _walk(nodes):
-        nonlocal found
-        for n in nodes:
-            if n.call_depth == target_depth:
-                found = True
-            _walk(n.children)
-
-    _walk(tree.root_branches)
-    return found

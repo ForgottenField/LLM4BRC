@@ -17,7 +17,6 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Optional
 
 from llm_client.fp_analysis.cfg_cache_set import _method_component
 from llm_client.fp_analysis.cfg_branch_models import (
@@ -1596,160 +1595,6 @@ class CFGBranchExtractor:
                 return int(m.group(2))
         return 0
 
-    # ─── Call detection ───────────────────────────────────────────────────────
-
-    def _find_calls_in_block(self, block: CFGBlock) -> list[dict]:
-        """Find function call expressions in a block's statements.
-
-        Returns a list of dicts with keys ``line``, ``expr``, ``callee``.
-        """
-        calls: list[dict] = []
-        for stmt in block.statements:
-            parsed = self._parse_call_statement(stmt)
-            if parsed:
-                calls.append(parsed)
-        return calls
-
-    def _parse_call_statement(self, stmt: str) -> dict | None:
-        """Parse a single statement for a function call pattern.
-
-        Matches patterns like:
-        - ``"572: r = wslay_frame_recv(ctx->frame_ctx, &iocb)"``
-        - ``"[B2.2] (CallExpr) memset(...)"``
-
-        Returns a dict with ``line``, ``expr``, ``callee``, and ``ret_var``,
-        or ``None`` if the statement is not a function call.
-
-        The method does NOT rely on ``CallExpr`` markers because source-code
-        statements (from ``source_between``) use plain C++ syntax without
-        AST annotations.
-        """
-        line_no = _extract_line_number(stmt)
-
-        # Try to extract assignment: "variable = func_name(" pattern
-        assign_m = re.search(r'(\w+)\s*=\s*(\w+)\s*\(', stmt)
-        if assign_m:
-            ret_var = assign_m.group(1)
-            callee = assign_m.group(2)
-            # Filter out common keywords/constants
-            if callee.lower() in {"sizeof", "true", "false", "null", "nullptr",
-                                   "if", "while", "for", "return", "int", "char",
-                                   "auto", "struct", "class"}:
-                return None
-            return {
-                "line": line_no,
-                "expr": stmt.strip(),
-                "callee": callee,
-                "ret_var": ret_var,
-            }
-
-        # Fallback: find any function-call pattern "func("
-        call_m = re.search(r'(?:^|\s)([a-z_]\w*)\s*\(', stmt, re.IGNORECASE)
-        if call_m:
-            callee = call_m.group(1)
-            if callee.lower() in {"if", "while", "for", "switch", "return", "sizeof"}:
-                return None
-            return {
-                "line": line_no,
-                "expr": stmt.strip(),
-                "callee": callee,
-                "ret_var": None,
-            }
-
-        return None
-
-    # ─── Adaptive depth control ───────────────────────────────────────────────
-
-    def _should_extract_callee(
-        self,
-        call_site: dict,
-        depth: int,
-        postcondition: Postcondition,
-    ) -> bool:
-        """Decide whether to recursively extract a callee's CFG branches.
-
-        Full expansion: ALL callees with CFG data are extracted regardless of
-        return value relevance to the postcondition.  The pruning phase (Step 4,
-        ConflictChecker) determines which branches are relevant.
-
-        Only the depth cap limits extraction.
-        """
-        if depth >= self._max_depth:
-            return False
-
-        # Full expansion: always extract when within depth and CFG exists
-        # (The caller is responsible for checking CFG cache availability.)
-        return True
-
-    # ─── Callee extraction (for non-branch blocks) ──────────────────────────
-
-    def _extract_callees_from_block(
-        self,
-        cfg: CFGFunction,
-        block_id: str,
-        fn_name: str,
-        depth: int,
-        postcondition: Postcondition,
-    ) -> list[CFGBranchNode]:
-        """Scan a block for callee calls and extract their CFG subtrees.
-
-        This handles *non-branch* blocks — straight-line blocks containing
-        function calls like ``r = wslay_frame_recv(...)``.  Branch extraction
-        (for blocks with if/while/for terminators) is handled by
-        :meth:`_extract_from_block`.
-        """
-        block = cfg.blocks.get(block_id)
-        if block is None:
-            return []
-
-        call_sites = self._find_calls_in_block(block)
-        result: list[CFGBranchNode] = []
-        for call_site in call_sites:
-            if not self._should_extract_callee(
-                call_site=call_site,
-                depth=depth,
-                postcondition=postcondition,
-            ):
-                continue
-
-            callee_cfg = self._resolve_cfg_by_short_name(
-                call_site["callee"],
-                caller_fn=fn_name,
-                caller_file=cfg.source_file or "",
-                call_line=call_site.get("line", 0),
-            )
-            if callee_cfg is None:
-                continue
-
-            # Create a wrapper node for the call site
-            call_node = CFGBranchNode(
-                node_id=f"call_{fn_name}_{block_id}",
-                source_line=call_site.get("line", 0),
-                function_name=fn_name,
-                condition_expr=f"call {call_site['callee']}",
-                call_depth=depth,
-                callee_name=call_site["callee"],
-            )
-
-            # Extract callee's branches
-            callee_blocks = self._get_entry_blocks(callee_cfg)
-            for cb_id in callee_blocks:
-                child = self._extract_from_block(
-                    cfg=callee_cfg,
-                    block_id=cb_id,
-                    fn_name=call_site["callee"],
-                    depth=depth + 1,
-                    parent_call=f"L{call_site.get('line', 0)} {call_site['callee']}",
-                    postcondition=postcondition,
-                )
-                if child is not None:
-                    call_node.children.append(child)
-
-            if call_node.children:
-                result.append(call_node)
-
-        return result
-
     # ─── SliceMask helpers ────────────────────────────────────────────────────
 
     def _get_retained_cfg_blocks(self, fn_name: str) -> set[int]:
@@ -2522,14 +2367,6 @@ class CFGBranchExtractor:
         return False
 
     # ─── Misc helpers ─────────────────────────────────────────────────────────
-
-    def _get_entry_blocks(self, cfg: CFGFunction) -> list[str]:
-        """Get the entry blocks of a CFG function (starting points for traversal)."""
-        if cfg.entry_block_id:
-            return [cfg.entry_block_id]
-        # Fallback: first block by key order
-        keys = sorted(cfg.blocks.keys())
-        return [keys[0]] if keys else []
 
     @staticmethod
     def _parse_block_id(bid_str: str) -> int:

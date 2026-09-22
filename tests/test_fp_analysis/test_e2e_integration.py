@@ -12,18 +12,13 @@ from __future__ import annotations
 
 import os
 import tempfile
-from pathlib import Path
 
 import pytest
 
 from llm_client.fp_analysis.cfg_branch_extractor import CFGBranchExtractor
-from llm_client.fp_analysis.cfg_branch_models import (
-    CFGBranchNode,
-    CFGBranchTree,
-    Postcondition,
-)
+from llm_client.fp_analysis.cfg_branch_models import Postcondition
 from llm_client.fp_analysis.cfg_models import CFGBlock, CFGFunction
-from llm_client.fp_analysis.condition_extractor import ExtractedCondition, extract_condition
+from llm_client.fp_analysis.condition_extractor import extract_condition
 from llm_client.fp_analysis.slice_mask import SliceMask
 
 
@@ -136,11 +131,9 @@ void func() {
         # Build CFG index first (as extract() would)
         ext._build_cfg_index(cfg_with_element_refs)
 
-        pc = Postcondition("func", 3, "r >= 0", branch_taken=True)
         node = ext._extract_from_block(
             cfg=cfg_with_element_refs, block_id="B2",
             fn_name="func", depth=0, parent_call=None,
-            postcondition=pc,
         )
 
         assert node is not None
@@ -287,27 +280,10 @@ class TestFullBranchExtractionPipeline:
         )
         assert tree.segment_index == 0
 
-        # Check B2's branch has resolved_expr for the cross-block ref
-        b2_nodes = [n for n in tree.root_branches
-                    if "ctx->enabled" in n.resolved_expr or "ctx->valid" in n.resolved_expr]
-        assert len(b2_nodes) >= 0  # cross-block refs are best-effort
-
-        # Check that callee branches were extracted (via CG resolution)
-        # The B1 "call inner_fn" should produce a callee node
-        all_nodes = _collect_nodes(tree.root_branches)
-        callee_nodes = [n for n in all_nodes if n.callee_name == "inner_fn"]
-        # Note: callee extraction may produce depth=0 nodes or child nodes
-        # depending on whether B1 is a branch block (it's not — no terminator)
-        if not callee_nodes:
-            # Callee should be extracted via _extract_callees_from_block
-            # (called in extract() second pass)
-            pass  # The non-branch callee extraction is optional in tests
-
-
-def _collect_nodes(nodes: list[CFGBranchNode]) -> list[CFGBranchNode]:
-    """Recursively collect all nodes in a branch node list."""
-    result: list[CFGBranchNode] = []
-    for n in nodes:
-        result.append(n)
-        result.extend(_collect_nodes(n.children))
-    return result
+        # B2's condition resolves the cross-block element references: the
+        # short-circuit terminator `[B5.1] || ([B8.6] && [B7.6])` must come out
+        # naming the variables it reads, not as the raw `[...]` form.
+        assert any("ctx->enabled" in n.resolved_expr for n in tree.root_branches), (
+            f"cross-block refs unresolved: "
+            f"{[n.resolved_expr for n in tree.root_branches]!r}"
+        )
