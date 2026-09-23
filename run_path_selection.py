@@ -84,8 +84,8 @@ from llm_client.fp_analysis.condition_extractor import extract_condition
 from llm_client.fp_analysis.structural_pruning import build_pruner_from_segments
 
 from llm_client.fp_analysis.html_parser import FPReportParser
-from llm_client.fp_analysis.pdg_loader import load_pdg
-from llm_client.fp_analysis.pdg_models import SDG
+from llm_client.fp_analysis.pdg_loader import load_pdg, read_pdg_artifact_version
+from llm_client.fp_analysis.pdg_models import PDG_ARTIFACT_VERSION, SDG
 from llm_client.fp_analysis.pdg_augment import augment_pdg_sdg
 
 from llm_client.fp_analysis.path_seed_extractor import (
@@ -98,6 +98,8 @@ from llm_client.fp_analysis.slicer import SlicerConfig, compute_slice_from_seeds
 from llm_client.fp_analysis.slice_mask import SliceMask
 from llm_client.fp_analysis.domain_facts import extract_domain_facts, format_domain_facts
 from llm_client.fp_analysis.report_consistency import detect_report_contradictions
+from llm_client.fp_analysis.entry_state import detect_fabricated_entry_state
+from llm_client.fp_analysis.prompt_templates import parse_poc_unreachable_note
 
 from llm_client.fp_analysis.cfg_feasibility import (
     segment_path as _segment_path,
@@ -135,7 +137,7 @@ STAGES: tuple[tuple[int, str], ...] = (
     (3, "PDG 反向切片"),
     (4, "假设可行性"),
     (5, "分支过滤"),
-    (6, "报告路径自相矛盾"),
+    (6, "确定性一致性闸门"),
     (7, "语义有限域冲突"),
     (8, "路径空间收集与压缩"),
     (9, "路径选择"),
@@ -203,6 +205,56 @@ def _looks_like_project_root(path: Path) -> bool:
     )
 
 
+#: Artifact version → the check is memoised because a batch run resolves the
+#: same PDG once per report and the file is tens of MB.
+_PDG_VERSION_CACHE: dict[tuple[str, float], str | None] = {}
+
+
+def _check_pdg_artifact_version(pdg_path: Path, project_name: str) -> None:
+    """Refuse a ``pdg_<project>.json`` built by a different ``PDGBuilder`` revision.
+
+    A stale artifact is not detectable from its contents: it parses, it has
+    functions, nodes and edges — only the ``metadata.version`` it carries says
+    which graph shape it is.  ``pdg_protobuf.json`` sat at 1.0 (binary dated
+    8-21) while the source declared 1.2, so a whole protobuf evaluation ran on
+    a graph without the macro-branch annotation and without the
+    postdominator-derived control dependencies; the deterministic stage-6 gate
+    then compared condition texts the old builder had attributed to macro
+    bookkeeping nodes instead of the branch predicates, and turned three
+    ground-truth TP reports into FP.
+
+    Raises rather than warns: the failure is silent and expensive, and
+    ``main()`` resolves every report before the first LLM call, so a
+    misinvocation costs seconds.  An artifact with no ``metadata`` block at all
+    (a hand-made fixture passed via ``--pdg``) is only warned about — there is
+    nothing to compare.
+    """
+    try:
+        mtime = pdg_path.stat().st_mtime
+    except OSError:
+        return
+    key = (str(pdg_path), mtime)
+    if key not in _PDG_VERSION_CACHE:
+        _PDG_VERSION_CACHE[key] = read_pdg_artifact_version(pdg_path)
+    version = _PDG_VERSION_CACHE[key]
+    if version == PDG_ARTIFACT_VERSION:
+        return
+    rebuild = ("python3 tools/build_project_deps.py "
+               f"--project {project_name} --on-demand <reports dir>")
+    if version is None:
+        logger.warning(
+            "PDG %s declares no version (expected %r) — cannot verify it is "
+            "current; rebuild with: %s", pdg_path, PDG_ARTIFACT_VERSION, rebuild,
+        )
+        return
+    raise ValueError(
+        f"PDG {pdg_path} was built by a different PDGBuilder revision: it "
+        f"declares version {version!r}, this code expects "
+        f"{PDG_ARTIFACT_VERSION!r}. Rebuild it ({rebuild}) — analysing it would "
+        f"use a graph shape this code does not understand."
+    )
+
+
 def _resolve_paths(args, report_path: Path | str) -> tuple[Path, Path, Path, Path]:
     """Resolve (report, cfg_cache, pdg, source_root) for one report.
 
@@ -263,6 +315,7 @@ def _resolve_paths(args, report_path: Path | str) -> tuple[Path, Path, Path, Pat
             f"SDG/PDG file not found: {pdg_path} (project {project_name!r}). "
             f"Build it offline for this project, or pass --pdg <path>."
         )
+    _check_pdg_artifact_version(pdg_path, project_name)
 
     if args.cfg_cache:
         cfg_cache_path = Path(args.cfg_cache).resolve()
@@ -949,9 +1002,16 @@ def _verify_path(analyzer, report_path, source_root, out_path, report_stem,
             t0 = time.time()
             print("  7d. LLM simulated execution + feedback loop ...")
             sim_verifier = SimulationVerifier(analyzer)
+            # The generator's own `POC_UNREACHABLE:` claim (see
+            # prompts.POC_GENERATION_PROMPT rule 9), if it made one.  Handed to
+            # the auditor as a claim to adjudicate; it can support an FP only
+            # if the audit independently reproduces it.
+            poc_note = parse_poc_unreachable_note(poc_code)
+            if poc_note:
+                print(f"      Generator reported unreachable: {poc_note[:160]}")
             sim_res = sim_verifier.verify_with_feedback(
                 poc_code, completed_path, analysis_poc, max_rounds=3,
-                selected_branches=selections,
+                selected_branches=selections, generator_note=poc_note,
             )
             sim_elapsed = time.time() - t0
             conclusion = sim_res.get("conclusion", "unresolved")
@@ -986,6 +1046,7 @@ def _verify_path(analyzer, report_path, source_root, out_path, report_stem,
                         "path_conformance": r["sim"].path_conformance,
                         "path_conformance_ok": r["sim"].path_conformance_ok,
                         "parse_degraded": r["sim"].parse_degraded,
+                        "bug_value_source": r["sim"].bug_value_source,
                         # the leak verdict's raw evidence (memory-leak reports only), so a
                         # report-level verdict can be audited after the fact
                         "leak_chain": r["sim"].leak_chain,
@@ -994,6 +1055,9 @@ def _verify_path(analyzer, report_path, source_root, out_path, report_stem,
                 ],
                 "leak_verdict": sim_res.get("leak_verdict"),
                 "final_reason": sim_res.get("final_reason"),
+                # The POC generator's own POC_UNREACHABLE claim, if any (the
+                # auditor's adjudication of it lands in final_reason).
+                "generator_unreachable_note": poc_note or None,
             }
             # Step-by-step path conformance (hallucination guard): print, per
             # round, whether the POC reproduced each CSA report path step.
@@ -1254,6 +1318,16 @@ def process_report(args, report_path):
     # function+file, different lines, no intervening write, no call step
     # between the claims, unambiguous line pairing) — every one fails closed, so
     # a missed contradiction only degrades to the pipeline's usual behaviour.
+    #
+    # A second, independent detector shares this exit: `entry_state.py` reports
+    # the case where the report's own path *manufactures the entry state* — CSA
+    # assumes a pointer parameter is null, walks the FAILURE arm of an
+    # always-compiled check on that parameter (ABSL_RAW_CHECK/CHECK/
+    # FAISS_THROW_IF_NOT, whose failure arm aborts or throws) and then claims the
+    # deref is reached.  The failure arm does not return, so the path is not
+    # realizable.  Same character as the pair detector (the report contradicts
+    # itself, deterministically, without any input), same exit, different
+    # evidence — hence one shared block below.
     report_contradictions: list = []
     try:
         report_contradictions = detect_report_contradictions(
@@ -1261,18 +1335,38 @@ def process_report(args, report_path):
     except Exception as e:  # noqa: BLE001 — gate must never be fatal
         logger.warning("Report self-contradiction gate failed: %s", e)
         report_contradictions = []
-    if report_contradictions:
-        _c0 = report_contradictions[0]
-        print(f"\n{stage_label(6)}: report path self-contradiction — "
-              f"{len(report_contradictions)} pair(s) "
-              f"[{time.time()-t0:.1f}s]")
-        for _c in report_contradictions[:3]:
-            print(f"    ✗ {_c.condition} — L{_c.first.line}"
-                  f"({'TRUE' if _c.first.direction else 'FALSE'}, "
-                  f"event #{_c.first.event_number}) vs L{_c.second.line}"
-                  f"({'TRUE' if _c.second.direction else 'FALSE'}, "
-                  f"event #{_c.second.event_number})")
-        _fp_reason = _c0.reason()
+    entry_finding = None
+    try:
+        entry_finding = detect_fabricated_entry_state(
+            parsed_report, source_root)
+    except Exception as e:  # noqa: BLE001 — gate must never be fatal
+        logger.warning("Entry-state fabrication gate failed: %s", e)
+        entry_finding = None
+    if report_contradictions or entry_finding:
+        _fp_reasons: list[str] = []
+        if report_contradictions:
+            _c0 = report_contradictions[0]
+            print(f"\n{stage_label(6)}: report path self-contradiction — "
+                  f"{len(report_contradictions)} pair(s) "
+                  f"[{time.time()-t0:.1f}s]")
+            for _c in report_contradictions[:3]:
+                print(f"    ✗ {_c.condition} — L{_c.first.line}"
+                      f"({'TRUE' if _c.first.direction else 'FALSE'}, "
+                      f"event #{_c.first.event_number}) vs L{_c.second.line}"
+                      f"({'TRUE' if _c.second.direction else 'FALSE'}, "
+                      f"event #{_c.second.event_number})")
+            _fp_reasons.append(_c0.reason())
+        if entry_finding:
+            print(f"\n{stage_label(6)}: fabricated entry state — "
+                  f"{entry_finding.guard_macro} at L{entry_finding.guard_line} "
+                  f"[{time.time()-t0:.1f}s]")
+            print(f"    ✗ {entry_finding.guard_source}")
+            print(f"    ✗ CSA 报告在 L{entry_finding.guard_line} 取失败分支"
+                  f"（事件 #{entry_finding.branch_event_number}），"
+                  f"却声明 L{entry_finding.deref_line} 处解引用 "
+                  f"'{entry_finding.parameter}'")
+            _fp_reasons.append(entry_finding.reason())
+        _fp_reason = " ".join(_fp_reasons)
         print(f"\n{'='*70}")
         print("RESULTS")
         print(f"{'='*70}")
@@ -1285,9 +1379,20 @@ def process_report(args, report_path):
             "algorithm": "conflict-driven",
             "entry_function": entry_fn,
             "bug_type": parsed_report.metadata.bug_type,
-            "report_self_contradiction": {
+            "verdict": "FP",
+            "verdict_reason": _fp_reason,
+            "verdict_steps": (
+                [f"报告自相矛盾判定: {c.reason()}" for c in report_contradictions]
+                + ([f"入口状态不可实现判定: {entry_finding.reason()}"]
+                   if entry_finding else [])
+            ),
+            "total_elapsed_sec": round(time.time() - total_start, 1),
+        }
+        if report_contradictions:
+            _c0 = report_contradictions[0]
+            _output["report_self_contradiction"] = {
                 "decisive_fp": True,
-                "reason": _fp_reason,
+                "reason": _c0.reason(),
                 "condition": _c0.condition,
                 "variables": list(_c0.variables),
                 "first": {
@@ -1312,13 +1417,34 @@ def process_report(args, report_path):
                     }
                     for c in report_contradictions
                 ],
-            },
-            "verdict": "FP",
-            "verdict_step": stage_step(6, "（同一条件同路径反向）"),
-            "verdict_reason": _fp_reason,
-            "verdict_steps": [f"报告自相矛盾判定: {_fp_reason}"],
-            "total_elapsed_sec": round(time.time() - total_start, 1),
-        }
+            }
+        if entry_finding:
+            _output["entry_state_fabrication"] = {
+                "decisive_fp": True,
+                "kind": entry_finding.kind,
+                "reason": entry_finding.reason(),
+                "function": entry_finding.function,
+                "file": str(entry_finding.file),
+                "parameter": entry_finding.parameter,
+                "guard_macro": entry_finding.guard_macro,
+                "guard_condition": entry_finding.guard_condition,
+                "guard_line": entry_finding.guard_line,
+                "guard_source": entry_finding.guard_source,
+                "guard_semantics": entry_finding.guard_semantics,
+                "assumption_event_number": entry_finding.assumption_event_number,
+                "branch_event_number": entry_finding.branch_event_number,
+                "deref_line": entry_finding.deref_line,
+                "call_sites_in_project": entry_finding.call_sites,
+                "call_site_samples": list(entry_finding.call_site_samples),
+            }
+        # The verdict step names the detector that fired; when both did, the
+        # condition-pair detector keeps the canonical suffix and the entry-state
+        # finding is listed in `verdict_steps` alongside it.
+        _output["verdict_step"] = (
+            stage_step(6, "（同一条件同路径反向）")
+            if report_contradictions
+            else stage_step(6, "（入口状态制造：穿过必然终止的检查）")
+        )
         _out.write_text(json.dumps(_output, indent=2, default=str))
         print(f"\nFull results saved to: {_out}")
         print(f"Total pipeline time: {time.time() - total_start:.1f}s")

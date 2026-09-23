@@ -21,6 +21,27 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+#: Version of the ``pdg_<project>.json`` artifact this code understands.  It
+#: MUST equal ``Metadata["version"]`` in
+#: ``src/llm_client/csa_analysis/pdg/PDGBuilder.cpp`` — that constant is the
+#: builder's own statement of which graph shape it emits, and the two are
+#: compared by ``tools/build_project_deps.py`` (before and after a build) and by
+#: ``run_path_selection._resolve_paths`` (before the pipeline touches a report).
+#:
+#: Why this exists: ``pdg_protobuf.json`` sat at 1.0 for weeks while the source
+#: declared 1.2, so the protobuf corpus was analysed with a graph that lacked
+#: the macro-branch annotation and the postdominator-derived control
+#: dependencies — the stage-6 gate then compared condition texts the old
+#: builder had attributed to macro bookkeeping nodes instead of the branch
+#: predicates.  A stale artifact parses fine; only its declared version says so.
+#:
+#: 1.3: node ``expression`` is stored in full (no 117-char cap).  The cap cut
+#: exactly the machine-generated texts — template instantiations, macro
+#: expansions — so conditions that differ beyond char 117 became byte-identical
+#: and stage 6 paired them.  Consumers that need shorter text must cap when they
+#: render, not when they store.
+PDG_ARTIFACT_VERSION = "1.3"
+
 # ---------------------------------------------------------------------------
 # PDG components (intra-procedural)
 # ---------------------------------------------------------------------------

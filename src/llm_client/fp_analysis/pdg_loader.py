@@ -18,6 +18,7 @@ from typing import Optional
 
 from llm_client.fp_analysis.pdg_augment import augment_pdg_sdg
 from llm_client.fp_analysis.pdg_models import (
+    PDG_ARTIFACT_VERSION,
     ControlDepEdge,
     DefUseEdge,
     FunctionPDG,
@@ -27,6 +28,29 @@ from llm_client.fp_analysis.pdg_models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def read_pdg_artifact_version(json_path: str | Path) -> str | None:
+    """Return the ``metadata.version`` an artifact declares, or ``None``.
+
+    ``None`` means "cannot tell" — the file is unreadable/absent or carries no
+    ``metadata`` block (a hand-written fixture, say).  A *string* that differs
+    from :data:`PDG_ARTIFACT_VERSION` means the artifact was produced by a
+    different revision of ``PDGBuilder.cpp`` and must not be analysed: it parses
+    equally well, but its nodes/edges are a different shape (see the constant's
+    docstring).  Callers decide the policy — :func:`load_pdg` warns, the
+    pipeline refuses.
+    """
+    path = Path(json_path)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    metadata = raw.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    version = metadata.get("version")
+    return version if isinstance(version, str) else None
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +93,17 @@ def load_pdg(json_path: str | Path) -> dict[str, FunctionPDG]:
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("Failed to load PDG JSON from %s: %s", path, exc)
         return {}
+
+    metadata = raw.get("metadata")
+    version = metadata.get("version") if isinstance(metadata, dict) else None
+    if version != PDG_ARTIFACT_VERSION:
+        # Tolerant here on purpose (library callers, fixtures): the *pipeline*
+        # refuses, this only makes a stale artifact visible in the log.
+        logger.warning(
+            "PDG %s declares version %r but this code expects %r — rebuild it: "
+            "python3 tools/build_project_deps.py --project <name> --on-demand "
+            "<reports dir>", path, version, PDG_ARTIFACT_VERSION,
+        )
 
     functions: dict[str, FunctionPDG] = {}
     for func_data in raw.get("functions", []):

@@ -112,6 +112,19 @@ _CFG_PROJECT_CONFIGS: dict[str, dict] = {
         ],
         "force_includes": [],
     },
+    # Kept in sync with ``tools/build_project_deps.PROJECT_SPECS``
+    # (``--check-config`` warns when the two drift).
+    "protobuf": {
+        "include_paths": [
+            ".",
+            "src",
+            "third_party/abseil-cpp",
+            "third_party/googletest/googletest/include",
+            "third_party/googletest/googlemock/include",
+        ],
+        "defines": [],
+        "force_includes": [],
+    },
 }
 
 

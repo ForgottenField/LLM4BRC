@@ -436,8 +436,7 @@ static void buildFunctionPDG(
         llvm::raw_string_ostream OS(N.expression);
         S->printPretty(OS, nullptr, PrintingPolicy(*GLO));
         OS.flush();
-        if (N.expression.size() > 120)
-          N.expression = N.expression.substr(0, 117) + "...";
+        // No truncation here — see the "1.3" note at the end of main().
         // Mark as recovery-expr
         if (N.expression.find("recovery-expr") == std::string::npos)
           N.expression = "<recovery-expr>(" + N.expression + ")";
@@ -463,12 +462,10 @@ static void buildFunctionPDG(
         N.variable = dv;
         N.type = dt;
 
-        // Expression text (truncated)
+        // Expression text — full, untruncated (see "1.3" in main()).
         llvm::raw_string_ostream OS(N.expression);
         S->printPretty(OS, nullptr, PrintingPolicy(*GLO));
         OS.flush();
-        if (N.expression.size() > 120)
-          N.expression = N.expression.substr(0, 117) + "...";
 
         // Call info
         if (auto *CE = dyn_cast<CallExpr>(S)) {
@@ -544,11 +541,10 @@ static void buildFunctionPDG(
     N.blockId = 0;
     annotateMacro(N, Loc);
     {
+      // Full expression — see "1.3" in main().
       llvm::raw_string_ostream OS(N.expression);
       S->printPretty(OS, nullptr, PrintingPolicy(*GLO));
       OS.flush();
-      if (N.expression.size() > 120)
-        N.expression = N.expression.substr(0, 117) + "...";
     }
     N.isCall = true;
     N.callee = getCallee(CE);
@@ -1135,7 +1131,17 @@ static void writeJSON(llvm::raw_ostream &OS,
   //      fix) and exact predicate selection (terminator condition instead of
   //      the branching block's first node).  Node/def-use output is unchanged
   //      from 1.1; only control_dep_edges and the predicate identity differ.
-  Metadata["version"] = "1.2";
+  // 1.3: expressions are no longer truncated to 117 chars + "...".  The cap
+  //      (added before this file was under version control) hit exactly the
+  //      machine-generated names — template instantiations and macro
+  //      expansions — so distinct conditions collapsed to one identical text:
+  //      five different EXPECT_EQ lines recorded the same AssertHelper(...)
+  //      prefix, and the Stage-6 identity gate then reported a contradiction
+  //      that does not exist.  Measured cost of removal on protobuf:
+  //      +1.8% artifact size, same functions/nodes/CD/DU edges (the cap was
+  //      text-only), longest expression 2125 chars, p99 337.  Anything that
+  //      needs shorter text (prompts, result JSON) must cap at *render* time.
+  Metadata["version"] = "1.3";
   Root["metadata"] = std::move(Metadata);
 
   // Functions

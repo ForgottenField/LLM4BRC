@@ -346,6 +346,7 @@ Prohibited shortcuts (each fabricates reachability and must NOT be used):
 (b) Do NOT construct the buggy object/container in a degenerate empty state that real code cannot reach, then operate on its null internal pointer (e.g. build a zero-size `AlignedTable` whose `ptr` is null and call `clear()`/`memset` on it). If every real caller allocates size > 0 before that operation, size it > 0 and reach it through the real allocation path.
 (c) Do NOT defeat virtual dispatch by defining your own subclass that omits an override so an overridable base method runs. Call sites dispatch on the object's actual dynamic type; if every real subclass overrides the flagged virtual, the base default is unreachable → the report is an FP, not a POC to fabricate.
 (d) Do NOT re-implement or stub the real library function under `namespace {project_name}` (or otherwise) with a made-up internal format/magic. Call the REAL function on a REAL input it can actually parse; do not invent a header/magic the real parser rejects (e.g. a deserializer called on a buffer it cannot read).
+(e) Do NOT hand the bug its own trigger value. This rule is keyed on the PROVENANCE OF THE VALUE, not on which function you call — it applies even when the flagged function IS a public API you are supposed to call. If the bug-triggering value (the null / invalid / garbage / contradictory value the report claims at the flagged statement) comes ONLY from the test case's own literal, local, or declaration — e.g. `bool* out = nullptr; SimpleAtob("0", out);`, or `int32_t nanos; ParseTime("<input no real caller passes>", &seconds, &nanos)` — the test proves nothing: no real caller supplies that value. If the flagged function's own body documents or asserts that parameter (a `CHECK` / `assert` / `ABSL_RAW_CHECK` / `FAISS_THROW_IF_NOT` / `THROW_IF_NOT` on it), then driving it with a fabricated value is a CALLER-CONTRACT VIOLATION, not a bug in the flagged code — the report is a False Positive. Reach the same statement through a real caller's real inputs, or say so (rule 9).
 - A genuine TP POC is one whose triggering null/invalid condition is PRODUCED by real inputs flowing through real callers — not hard-coded as a literal argument or by constructing the exact pathological state directly in the test's own setup. If the only way to reach the flagged statement is a fabricated state/entry that no real caller can produce, the bug is UNREACHABLE in real usage → the report is a False Positive (do not fabricate a POC for it).
 {oom_rules}"""
 
@@ -361,6 +362,14 @@ POC_GENERATION_PROMPT = """Generate a minimal C++ test that calls the exact bugg
 
 ## Preconditions to Set Up
 {preconditions}
+
+**Read this before using them.** These come from the analyzer's ASSUMED path —
+they include the analyzer's assumptions about the ENTRY state (e.g. "<pointer>
+is null", "<value> is garbage/uninitialized"). Such an entry assumption is NOT
+an input you may hard-code: reproducing it means showing a REAL caller whose
+real inputs produce it (rule 9 / prohibited shortcut (e)). If no real caller can
+produce it, the report is a False Positive — say so instead of writing the
+pathological value into your own test's setup.
 
 ## Concretized Values (use these as actual C++ values)
 {concretized_values}
@@ -384,7 +393,9 @@ POC_GENERATION_PROMPT = """Generate a minimal C++ test that calls the exact bugg
 6. Only output the code, no explanations
 7. If the bug is in a template/header, include that header and trigger the instantiation through the real public API that instantiates it
 8. Do NOT re-implement/stub the real library function with a made-up internal format, and do NOT subclass to drop a virtual override so a base-class default runs — real dispatch must be preserved
-9. If the flagged statement can ONLY be reached through a fabricated state/entry that no real caller can produce (e.g. passing null to a parameter every real caller passes non-null, or an empty object no caller constructs empty), the report is a False Positive: do NOT fabricate — explain that instead of emitting a fake POC
+9. If the flagged statement can ONLY be reached through a fabricated state/entry that no real caller can produce (e.g. passing null to a parameter every real caller passes non-null, or an empty object no caller constructs empty), the report is a False Positive: do NOT fabricate a fake POC. Emit the test file with its FIRST line exactly
+   `// POC_UNREACHABLE: <one paragraph naming the parameter and value, which real call sites you checked, and why no real caller can supply it>`
+   and below it the closest test you could write. That first line is read back and adjudicated by the execution auditor, so state the blocking fact precisely — do not use it as a way out of a hard-but-real trigger
 
 {oom_trigger_instruction}
 
@@ -1541,12 +1552,13 @@ Report any defect as a POC DEFECT (fixable) — do NOT treat a defective test ca
 
 SECOND, VERIFY PATH CONFORMANCE STEP BY STEP. The report provides an ORDERED list of CSA path steps (assumptions, branch decisions, claimed values, and the final report). For EACH step, in order, state what the report expects at that step and what the POC's simulated execution actually produces there, and whether they MATCH. Judge each step by its KIND — do NOT require the POC to literally re-execute the same statement/branch:
 - ASSUMPTION events ("Assuming X is non-null", "Assuming X is equal to N"): SATISFIED when the POC's concrete inputs actually make that assumption TRUE (e.g. the POC passes a non-null argument). The POC does not need to execute the same function or branch — the assumption is a property of the values, not of the trace.
+  - BUT an assumption about a CALL'S OUTCOME — "Assuming the condition is true" where that condition IS a call's return value, an "the API succeeded" assumption, or the compiler's note "Returning without writing to '<out-param>'" — is a property of the CALL, not of the POC's inputs. It is SATISFIED only when the POC's inputs make that call produce that same outcome. Driving the call to the OPPOSITE outcome (the call fails / returns false / leaves the output parameter unwritten while the report assumes it succeeded) does NOT satisfy it: mark that step UNSATISFIED and say the POC's inputs contradict the report there. If the report's own path ALSO assumes that same call succeeded (e.g. an `ASSERT_TRUE(call(...))` step), the report is internally contradictory → FP, not a matter of regenerating the POC.
 - BRANCH DECISIONS ("Taking true/false branch at L…"): SATISFIED when the POC's execution takes that branch with the same outcome at that point. But a branch in a DIFFERENT function that the report merely passes through (e.g. a callee's internal test) is satisfied as long as the POC does not force the opposite outcome anywhere on its path.
 - CLAIMED VALUES / KEY EVENTS ("Null pointer value stored", "Error Start", "value is garbage", API outcomes) and the final REPORT step: SATISFIED when the POC's execution actually produces that same state (the same field/pointer holds the same value) at the corresponding point.
 Mark a step UNSATISFIED only when the POC's execution genuinely contradicts it — e.g. the POC manufactures a field value or object state the report's steps never assume, or it reaches the flagged statement through a state that differs from what the report claims. A non-conforming "trigger" is an artifact of the wrong test case — it is NOT a valid TP, and it is NOT evidence that the report is an FP either; it only means the test case must be regenerated to match the reported path.
 
 Audit rules (these are the common reasons an FP report gets misclassified as TP):
-- Check the CSA path for INTERNAL CONTRADICTION. A report is self-inconsistent (and therefore almost always an FP) when two of its own claims cannot hold together — e.g. it assumes "error == 0" (an API call SUCCEEDED) yet also claims that API's returned output pointer is null; or it assumes a null-guard "if (x != nullptr)" is TAKEN while also claiming x is null (reaching the deref requires the guard to be true, which requires x to be non-null).
+- Check the CSA path for INTERNAL CONTRADICTION. A report is self-inconsistent (and therefore almost always an FP) when two of its own claims cannot hold together — e.g. it assumes "error == 0" (an API call SUCCEEDED) yet also claims that API's returned output pointer is null **or that the call left its output parameter unwritten / uninitialized** (a successful call writes its output parameter — that is its postcondition); or it assumes a null-guard "if (x != nullptr)" is TAKEN while also claiming x is null (reaching the deref requires the guard to be true, which requires x to be non-null); or it takes the FAILURE arm of a check that TERMINATES — the true branch of `CHECK(cond)` / `ABSL_RAW_CHECK(cond, …)` / `assert(cond)` / `FAISS_THROW_IF_NOT(cond, …)` is the branch where the check FAILED, and that arm aborts or throws, so it cannot return — and then continues to later statements in the same function (e.g. the path takes the failure branch of `ABSL_RAW_CHECK(out != nullptr, …)` and then claims a dereference of `out`). All three are unrealizable paths: say FP and name the two claims that cannot hold together.
 - DO NOT trust POC stubs / mocks that violate real API contracts. If the POC fakes an API (getaddrinfo, read, memcpy, malloc, new, snprintf, ...) with an unrealistic result (e.g. a "successful" call that returns a null pointer, or fails to write its output parameter, or returns a value no real call could), treat that as a POC DEFECT, not as evidence the bug fires. Use the real API's documented postcondition instead (e.g. getaddrinfo success ⟹ the returned addrinfo list and each ai_addr are non-null).
 - DO NOT trust DIRECT CONSTRUCTION of a struct that real code only ever receives from a system/dependency API. A POC that bypasses the API by hand-building the struct (e.g. a local `addrinfo ai; memset(&ai,0,sizeof ai); ai.ai_addr = nullptr;` instead of calling getaddrinfo) and fills it with a state the real API's postcondition forbids (e.g. null ai_addr, a sockaddr the API would never return) is a POC DEFECT, NOT a reachable real-world state. Check whether any REAL caller can reach the flagged function with such a struct: if every real call site goes through the API (so the invalid field can never occur), the flagged bug is unreachable in real usage → the report is an FP, and the fabricated struct is why a prior classification trusted it.
 - Audit HOW the test case reaches the flagged statement, not just whether the statement dereferences null. A true positive must reach it through a REAL public caller with real inputs. Treat each of these as a manufactured entry (a state/literal no real caller can produce) → the bug is UNREACHABLE in real usage → FP, NOT a trigger:
@@ -1639,6 +1651,7 @@ For EACH critical node above, determine whether it actually holds under real exe
   (b) it builds the buggy object in an empty/zero-size state with a null internal pointer (every real caller sizes it > 0 before the flagged operation);
   (c) it defines a subclass that drops a virtual override so a base-class default runs, when every real subclass overrides it (base never actually dispatched for a real object);
   (d) it re-implements/stubs the real library function with a made-up internal format/magic instead of calling the real function on real input;
+  (e) the bug-triggering value's ONLY source is the test's own literal/local/declaration, even though it calls a genuine function — e.g. `bool* out = nullptr; SimpleAtob("0", out);`, or a `int32_t nanos;` handed to a call whose real callers pass an input that always writes it. Key this rule on the PROVENANCE OF THE VALUE, not on which function is called: it applies when the flagged function IS the public API. If the test's own setup is the only thing producing the null/invalid/garbage value, and the real call sites cannot supply it, the trigger is manufactured → FP. (If the flagged function's own body checks that parameter — `CHECK`/`ABSL_RAW_CHECK`/`THROW_IF_NOT`/`assert` — then a fabricated value is a caller-contract violation on top of it);
 - NULL-POINTER-ARGUMENT UB — do NOT excuse it by length. Passing a null pointer to a `nonnull`-annotated / pointer-requiring API (e.g. `memcpy`, `memmove`, `memset`, `memcmp`) is a contract violation and undefined behavior REGARDLESS of the count/length: a zero length (e.g. `memcpy(nullptr, nullptr, 0)`) does NOT make it well-defined or harmless. If the null can arise from a real caller, the call IS the reported defect → TP (do not argue "size 0 ⇒ no crash ⇒ FP");
 - values the analyzer calls "uninitialized / garbage" that are actually written by a caller or callee before use;
 - output-parameter patterns (passing &of_uninitialized_local as an out-param is valid, not a bug).
@@ -1677,6 +1690,7 @@ For EACH step above, verify by simulation that the POC produces the SAME result 
 - **Reaching the buggy line with a valid/non-null pointer is NOT a trigger.** If the buggy statement executes but the dereference is safe (e.g. `ai_addr` is a concrete non-null object), set `triggered=false`.
 - If the POC does **not** set up the null/invalid condition that the CSA path requires to fire (it passes a valid object where the bug needs a null pointer), the POC **cannot trigger** — say so honestly, `triggered=false`.
 - `triggered` and `fp_likelihood` MUST be mutually consistent: never set `triggered=true` together with `fp_likelihood=definite_fp`. If the flagged condition is actually safe (deref target is concrete non-null, or a real-API success postcondition forbids null), set `triggered=false` and `fp_likelihood=definite_fp`.
+- `bug_value_source` and `triggered` MUST be mutually consistent: when the trigger value's ONLY source is the test case's own literal/local/declaration (`poc_argument`), the "trigger" is manufactured by the test case and is not reachability — do NOT set `triggered=true`; set `triggered=false` and say why no real caller can supply that value. Answer `poc_argument` only when that is really the case (it makes the round conclude FP); if the value CAN arise from a real caller, answer `real_caller` and the trigger stands.
 - `path_conformance_ok` MUST be **false whenever any report step's expected result is not reproduced by the POC's execution**, even if the bug appears to fire. In that case the POC is a test-case defect to be regenerated — do NOT report it as a TP, and do NOT report it as an FP. It MUST also be consistent with the mismatch list: `path_conformance_ok = true` iff `path_mismatches` is empty.
 
 Output JSON:
@@ -1690,6 +1704,7 @@ Output JSON:
   "trace": ["L<line>: <statement> → <variable state>", "..."],
   "reason": "How/why the bug does or does not fire, including which CSA critical node(s) are violated if FP.",
   "csa_contradiction": "If the CSA path is internally self-contradictory, describe the contradiction; otherwise null.",
+  "bug_value_source": "Where the value that triggers the bug (the null/invalid/garbage/contradictory value the report claims at the flagged statement) actually comes from on this test case: 'real_caller' (a real caller's real input produced it), 'api_return' (a real API's return/postcondition), 'member_state' (state a real object acquired through its own API), 'poc_argument' (ONLY the test case's own literal/local/declaration — no real caller could supply it), 'unknown'. Be exact: this field decides the verdict when it conflicts with `triggered`.",
   "fp_likelihood": "definite_fp | likely_fp | uncertain | tp",
   "blocking_reason": "If NOT triggered: the exact condition/precondition/input that prevented reaching or triggering the bug. If triggered, null.",
   "suggested_input_change": "If NOT triggered due to wrong POC setup: a concrete change to inputs/setup that would reach the buggy path. If triggered or unreachable, null."
@@ -1749,3 +1764,35 @@ Refinement constraints:
 - Do NOT fabricate an unrealistic state to force the trigger. In particular, do NOT hand-construct a struct that real code only receives from a system/dependency API (e.g. an `addrinfo` with `ai_addr=nullptr`) unless you are certain a real caller can produce it. If the only way to reach the flagged statement is through such a fabricated state that real callers cannot produce, the bug is a False Positive — keep the POC as-is rather than fabricate.
 - FIX EVERY path-conformance failure listed above: the refined POC must drive the real public API so that each report step's expected state (branch decision, claimed value, object state) is actually produced by the real code, NOT manufactured by hand (no direct field writes that no real API performs, no stubbed/re-implemented library types, no bypassing the real caller). Removing a manufactured state is the correct fix even if it means the POC no longer crashes.
 """
+
+
+# The escape hatch in ``POC_GENERATION_PROMPT`` rule 9: a generator that can
+# only reach the flag through a state no real caller produces says so on the
+# file's first line instead of fabricating a test.  The marker is parsed back
+# out here and handed to the execution auditor as a CLAIM TO ADJUDICATE — the
+# audit, not the generator, decides whether it is grounds for FP.
+POC_UNREACHABLE_MARKER = "// POC_UNREACHABLE:"
+
+
+def parse_poc_unreachable_note(poc_code: str) -> str:
+    """Return the generator's ``POC_UNREACHABLE:`` claim, or ``""``.
+
+    Only the first non-blank line is honoured: the marker is specified as the
+    file's FIRST line so that a reason mentioned elsewhere (a comment inside
+    the test body, an echoed prompt fragment) cannot be mistaken for the
+    generator's own verdict.  Blank lines and a leading ``#include``/``//``
+    banner are tolerated before it, since the model sometimes emits a license
+    header first.
+    """
+    for raw in (poc_code or "").splitlines()[:5]:
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith(POC_UNREACHABLE_MARKER):
+            return line[len(POC_UNREACHABLE_MARKER):].strip()
+        # Anything else before the marker means the first-line contract was
+        # broken → no note (fail-closed: silence, not a guessed claim).
+        if not (line.startswith("//") or line.startswith("/*")
+                or line.startswith("#include") or line.startswith("*")):
+            return ""
+    return ""

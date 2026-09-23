@@ -102,6 +102,9 @@ class _StubAnalyzer:
     def _format_selected_branch_blueprint(self, selections):
         return ""
 
+    def _extract_callee_sources_for_prompt(self, parsed):
+        return ""
+
 
 # ── 1. finish_reason reaches the caller ──────────────────────────────────────
 
@@ -421,3 +424,37 @@ class TestDegradedRoundNeverAcceptedAsTP:
         )
 
         assert out["conclusion"] == "tp"
+
+
+# ── 4. an unusable ``selected_candidate`` must not abort the report ──────────
+
+class TestSelectedCandidateCoercion:
+    """``selected_candidate`` comes from the LLM, so it can be anything.
+
+    ``data.get("selected_candidate", 1)`` defaults only a *missing* key: a
+    present-but-``None`` value reached ``selected_idx - 1`` and killed the whole
+    report with ``TypeError: unsupported operand type(s) for -: 'NoneType' and
+    'int'`` (protobuf ``report-numbers.cc-SimpleAtob-5-1.html``).  An unreadable
+    reply must degrade to a retryable/checked candidate, never to a crash.
+    """
+
+    def test_unusable_values_fall_back_to_the_first_candidate(self):
+        from llm_client.fp_analysis.path_analyzer import _selected_candidate_index
+
+        for value in (None, "2", "candidate 2", "", True, False, 2.5, [], {}):
+            assert _selected_candidate_index(value, 5, "t") == 1, value
+
+    def test_usable_values_pass_through(self):
+        from llm_client.fp_analysis.path_analyzer import _selected_candidate_index
+
+        assert _selected_candidate_index(3, 5, "t") == 3
+        assert _selected_candidate_index(3.0, 5, "t") == 3
+        assert _selected_candidate_index(5, 5, "t") == 5
+
+    def test_out_of_range_is_reported_not_silently_clamped(self, caplog):
+        from llm_client.fp_analysis.path_analyzer import _selected_candidate_index
+
+        with caplog.at_level("WARNING"):
+            assert _selected_candidate_index(0, 5, "t") == 1
+            assert _selected_candidate_index(99, 5, "t") == 1
+        assert "unusable selected_candidate" in caplog.text

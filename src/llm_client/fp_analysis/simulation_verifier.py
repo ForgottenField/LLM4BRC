@@ -262,6 +262,16 @@ class SimulationResult:
     # MEMORY_LEAK_SIMULATION_RULES).  Lets the verifier reach a decisive leak verdict instead of
     # getting stuck in a "reachable the allocation but never fires" refine limbo.
     leak_chain: dict | None = None
+    # Provenance of the bug-triggering value on THIS test case:
+    # "real_caller" | "api_return" | "member_state" | "poc_argument" | "unknown".
+    # `poc_argument` means the value can only come from the test case's own
+    # literal/local/declaration — there is no real caller that supplies it.  A
+    # round that says `triggered=true` AND `poc_argument` is self-contradictory
+    # ("the bug fires" + "nothing but my own test could produce the trigger"),
+    # and the trigger is an artifact of the POC, so it is overridden to FP —
+    # this is the deterministic half of the "POC manufactures the precondition"
+    # guard (the other half is the entry-state gate in `entry_state.py`).
+    bug_value_source: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict, steps: list[dict] | None = None) -> "SimulationResult":
@@ -325,6 +335,12 @@ class SimulationResult:
             path_conformance_ok=conform_ok,
             parse_degraded=degraded,
             leak_chain=_normalize_leak_chain(data.get("leak_chain")),
+            bug_value_source=(
+                str(data["bug_value_source"]).strip().lower()
+                if isinstance(data.get("bug_value_source"), str)
+                and str(data["bug_value_source"]).strip()
+                else None
+            ),
         )
 
 
@@ -461,9 +477,16 @@ class SimulationVerifier:
     # ── simulation ──────────────────────────────────────────────────────────
 
     def simulate_execution(self, poc_code, completed, analysis,
-                           selected_branches=None) -> SimulationResult:
+                           selected_branches=None,
+                           generator_note: str = "") -> SimulationResult:
         """Ask the LLM to simulate executing *poc_code* and report whether the
-        flagged bug triggers.  Returns a :class:`SimulationResult`."""
+        flagged bug triggers.  Returns a :class:`SimulationResult`.
+
+        *generator_note*: the POC generator's own `POC_UNREACHABLE:` claim (see
+        ``prompts.POC_GENERATION_PROMPT`` rule 9), if it made one.  It is passed
+        as a CLAIM TO ADJUDICATE, never as a conclusion — otherwise the
+        generator could decide the verdict by asserting unreachability.
+        """
         info = self._bug_info(analysis)
         system_prompt = SIMULATION_SYSTEM_PROMPT.format(**info)
         step_rows = self._csa_step_rows(analysis)
@@ -483,6 +506,51 @@ class SimulationVerifier:
             poc_code=poc_code,
             source_context=self._source_context(analysis),
         )
+        # REAL bodies of the functions the reported path calls into.  The
+        # default context is the bug file only, so a callee in a
+        # *differently named* file was invisible here — which is how a report
+        # claiming an unwritten output parameter survived the audit (the write
+        # that refutes it lived in another file).  Advisory: an unresolvable
+        # callee yields no block, and the audit rules below decide.
+        callee_sources = self._analyzer._extract_callee_sources_for_prompt(
+            getattr(analysis, "parsed_report", None)
+        )
+        if callee_sources:
+            user_prompt += (
+                "\n\n## Source of the Functions the Reported Path Calls Into\n"
+                "These are the REAL bodies of the callees named by the report's "
+                "`Calling '…'` steps and by the compiler's return notes. Judge "
+                "the report's claims against THEM (e.g. whether a call that "
+                "shows as returning without writing an output parameter really "
+                "has no path that writes it, and whether the POC's own input "
+                "reproduces the call outcome the report assumes). Line numbers "
+                "in each body are relative to that body, not to the file:\n"
+                f"{callee_sources}\n"
+            )
+
+        # The generator's OWN claim of unreachability, if it emitted one.  It is
+        # framed as a claim to falsify, never as a finding: an unreachability
+        # reason the generator merely *states* (e.g. "no in-tree caller passes
+        # this") is worth auditing, but the audit must still reproduce it
+        # against the sources above before it can conclude FP.  Without this
+        # channel the generation prompt's escape hatch had no consumer, so a
+        # POC that knows it cannot reach the bug still had to pretend it did.
+        if generator_note:
+            user_prompt += (
+                "\n\n## The POC Generator's Own Claim (ADJUDICATE, DO NOT ASSUME)\n"
+                "The generator of the POC above reported that it could NOT reach "
+                "the flag by any legitimate execution, giving this reason:\n"
+                f"    {generator_note}\n"
+                "Treat this as a CLAIM TO CHECK, not as evidence. Reproduce or "
+                "refute it against the sources above and the execution you "
+                "simulate. It may only support `conclusion: fp` if your own "
+                "simulation independently shows the report's path unrealizable "
+                "(e.g. the trigger value can only come from the POC's own "
+                "argument, or the report's assumed call outcome is refuted by "
+                "the callee body); a claimed-but-unreproduced reason is NOT "
+                "grounds for FP. It is never grounds for `triggered: true`.\n"
+            )
+
         # Inject the selected feasible-path branch blueprint so the simulation
         # judges THIS specific branch path (not an arbitrary one).  This is what
         # makes Tier-2 "is this other path infeasible?" a real per-path check.
@@ -704,6 +772,18 @@ class SimulationVerifier:
         ),
     ]
 
+    @staticmethod
+    def _is_manufactured_trigger(sim: SimulationResult) -> bool:
+        """Whether this round both fires the bug and admits the POC made it fire.
+
+        Only the `triggered` + `poc_argument` pair is decisive.  A round that
+        reports `poc_argument` *without* a trigger is left alone: that is a
+        self-report of a wrong test case (regenerate), not proof of
+        unreachability, and treating it as FP would flip genuine TPs whose test
+        setup the model was merely unsure about.
+        """
+        return (sim.bug_value_source == "poc_argument") and bool(sim.triggered)
+
     def _fabrication_evidence(self, poc_code: str) -> str | None:
         """Return a reason string if *poc_code* fabricates an impossible
         dependency-produced state, else None.  Deterministic (no LLM)."""
@@ -817,7 +897,7 @@ class SimulationVerifier:
 
     def verify_with_feedback(
         self, poc_code, completed, analysis, max_rounds: int = 3,
-        selected_branches=None,
+        selected_branches=None, generator_note: str = "",
     ) -> dict:
         """Run the TP-validation feedback loop.
 
@@ -866,8 +946,12 @@ class SimulationVerifier:
         is_leak = _is_leak_type(self._bug_info(analysis)["bug_type"])
         for rnd in range(1, max_rounds + 1):
             logger.info("Simulation round %d/%d ...", rnd, max_rounds)
+            # The generator's note describes the POC *it* produced, so it is
+            # shown only while judging that same code.  A refined POC is a
+            # different test case and is judged on its own execution.
             sim = self.simulate_execution(
-                code, completed, analysis, selected_branches=selected_branches
+                code, completed, analysis, selected_branches=selected_branches,
+                generator_note=generator_note if rnd == 1 else "",
             )
             rounds.append({"round": rnd, "sim": sim, "poc_code": code})
 
@@ -990,6 +1074,33 @@ class SimulationVerifier:
                         "rounds": rounds, "final_reason": reason,
                         "leak_verdict": "fp",
                     }
+
+            if sim.triggered and self._is_manufactured_trigger(sim):
+                # The round says the bug fires AND that the only source of the
+                # triggering value is the test case's own literal/local — no
+                # real caller supplies it.  Both cannot be true: the "trigger"
+                # is an artifact of the test's setup, not reachability, which is
+                # exactly the "POC manufactures the precondition" defect (a POC
+                # passing `nullptr` itself, or an input no real caller passes).
+                # Overriding the trigger (never the other way round) mirrors the
+                # `definite_fp` precedence rule.
+                reason = (
+                    "POC 自造触发前提：模拟结果既报 triggered=true，又承认触发值"
+                    "只能来自测试用例自身的字面量/局部变量（bug_value_source="
+                    "poc_argument），没有任何真实调用方会传入该值 —— 触发是测试"
+                    "搭建的产物，不是真实可达性，故判 FP。"
+                    + (f"模拟依据：{sim.reason[:300]}" if sim.reason else "")
+                )
+                logger.info(
+                    "Simulation round %d: triggered=true with "
+                    "bug_value_source=poc_argument (the POC supplies the trigger "
+                    "value itself) → overriding TP to FP.", rnd,
+                )
+                return {
+                    "triggered": False, "conclusion": "fp",
+                    "rounds": rounds, "final_reason": reason,
+                    "leak_verdict": None,
+                }
 
             if sim.triggered:
                 # Deterministic fabrication guard: a "trigger" that comes from a

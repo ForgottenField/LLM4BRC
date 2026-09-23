@@ -35,10 +35,12 @@
                  └───────────────────────┬──────────────────────────────┘
                                          ▼
         ┌────────────────────────────────────────────────────────────────┐
-        │ 阶段 6  确定性一致性闸门（无 LLM）                             │
-        │   报告自身路径把同一条件判成两个方向 ⇒ 不可实现                │
+        │ 阶段 6  确定性闸门（无 LLM），共用一个早返回出口               │
+        │   6a 报告自身路径把同一条件判成两个方向 ⇒ 不可实现             │
+        │   6b 入口状态制造：报告的 null 入口假设 + 自己的路径穿过       │
+        │      函数体内必然终止的致命检查 ⇒ 不可实现                     │
         └───────────────┬────────────────────────────┬───────────────────┘
-                  矛盾 ✗ │                            │ 无矛盾
+                  矛盾 ✗ │                            │ 均不成立
                         ▼                            ▼
                    ┌─────────┐      ┌────────────────────────────────────┐
                    │  FP     │      │ 阶段 7  语义有限域闸门（LLM）      │
@@ -75,14 +77,19 @@
 | 3 | PDG 反向切片 | `SDG`, `bug_path` | `SliceMask`, `SliceResult` | `build_slice_mask`, `path_seed_extractor`, `slicer`, `slice_mask` |
 | 4 | 假设可行性 | `ParsedReport`, `SDG` | `hard_constraints`, `cumulative_state`（+ `FPAnalyzer`） | `FPAnalyzer.check_assumptions_feasibility` |
 | 5 | 分支过滤 | 段 + CFG cache + `SliceMask` | 每段 `consistent`/`contradictory`/`insufficient` 分支 | `run_branch_filter`, `CFGBranchExtractor`, `ConflictChecker` |
-| 6 | **确定性一致性闸门** | 段的分支树 + 报告事件 | **FP，直接返回** | `report_consistency.detect_report_contradictions` |
+| 6 | **确定性一致性闸门**（6a 自相矛盾 / 6b 入口状态制造） | 段的分支树 + 报告事件 + bug 文件 | **FP，直接返回** | `report_consistency.detect_report_contradictions`, `entry_state.detect_fabricated_entry_state` |
 | 7 | **语义有限域闸门** | `ParsedReport` + domain facts | **FP，直接返回** | `extract_domain_facts`/`format_domain_facts`, `FPAnalyzer.semantic_fp_reason` |
 | 8 | 路径空间收集与压缩 | 段的可行候选 | `whole_path_bound`, `node_relevance`, CI 分组 | `collect_path_space`, `classify_branch_relevance`, `reduce_path_space`, `annotate_ci_groups`, `iter_combinations` |
 | 9 | 路径选择 | 压缩后的路径空间 | 可行 `selections`（或各推广结论） | `run_path_selection`, `FPAnalyzer._select_feasible_path_segments`, `_reselect_conflicting` |
 | 10 | POC 验证与结论 | `selections` | **TP / FP / UNKNOWN** + `poc_*.cpp` | `_verify_path`, `FPAnalyzer._complete_constraints`/`generate_poc`, `SimulationVerifier` |
 
 阶段 1–3 是**纯确定性装配**；4 有 LLM；5 是确定性判定 + LLM 复核；
-**6 与 7 是两条"枚举前就返回 FP"的闸门**；8 纯确定性；9–10 是本方法的判定核心。
+**6（6a/6b）与 7 是三条"枚举前就返回 FP"的闸门**（6 的两条是确定性的，见 §3）；
+8 纯确定性；9–10 是本方法的判定核心。
+
+阶段 6 的两条判据共享一个早返回出口：命中任一条 ⇒ 结果 JSON 带各自的证据块
+（`report_self_contradiction` / `entry_state_fabrication`）、**无 `poc_result`**、在阶段 8 之前返回。
+两条都不命中才继续。
 
 ---
 
@@ -169,12 +176,13 @@
 
 ---
 
-## 3. 两条"枚举前返回 FP"的确定性出口
+## 3. "枚举前返回 FP"的出口
 
-这两条是本方法**最便宜也最可靠**的 FP 结论：在路径选择与 POC 之前就返回，
-不枚举那个可能上亿的路径空间。
+这三条是本方法**最便宜也最可靠**的 FP 结论：在路径选择与 POC 之前就返回，
+不枚举那个可能上亿的路径空间。阶段 6 的两条（6a/6b）是**纯确定性**的
+（不需要模型，只需报告 + 源码），阶段 7 需要一次 LLM 调用。
 
-### 阶段 6 — 报告路径自相矛盾（确定性，无 LLM）
+### 阶段 6a — 报告路径自相矛盾（确定性，无 LLM）
 
 **原理**：CSA 每一步只印方向（`Assuming the condition is true/false`），**不印值**；
 条件的**文本**只存在于 CFG/PDG 分支树里（按源码行索引）。把
@@ -206,6 +214,80 @@ TP 的 `clone_index` 与其余十份 FP 均不命中。
 
 **出口**：`verdict="FP"`，结果 JSON 带 `report_self_contradiction` 块（条件、变量、两处出现各自的
 行/方向/事件号），**无 `poc_result`**，在阶段 8 之前返回。
+
+#### 条件同一性的两段历史（均已修，已实测）
+
+faiss 的两次命中（484-1/484-2）是有效的：条件是 19 字符的真谓词 `h == fourcc("IHNs")`。
+
+protobuf 21 份的批次实验里曾出现 **5 次命中没有一次建立在有效同一性上**——3 次把 ground-truth
+**TP** 判成 FP（`subprocess.cc-Start-{28,31,58}-1`），另 2 次答案虽是 FP 但理由同样无效
+（`stringprintf.cc-StringPrintfVector-24-1`、`time_test.cc-CmpHelperEQ-1-1`）。两个成因，**都已从
+源头修掉，不需要 Python 侧护栏**：
+
+1. **陈旧产物**（`pdg_protobuf.json` 声明 1.0，是旧的 `build/pdg_builder_local` 二进制产出的，
+   而源码已是 1.2）。同一份 compile db 重建 1.2 后：控制依赖边 23,746 → 33,729（+42%），分支谓词
+   从宏记账节点回到真谓词（`v.size()` → `!(!((v.size()) <= (kStringPrintfVectorMaxArgs)))`，
+   `pipe(...) != -1` 的 `event` 节点 → 真正的 `if_cond`）。版本已加三道闸门，见
+   [`docs/dependency-graph-build-guide.md`](dependency-graph-build-guide.md) §3.1。
+2. **表达式截断**（`PDGBuilder.cpp` 的 `> 120` → `substr(0,117) + "..."`，3 处）。重建 1.2 之后
+   仍留下 `time_test.cc-CmpHelperEQ-1-1` 的 6 次命中：L62/L64/L65（判 FALSE）与 L66/L67（判 TRUE）
+   其实是五条**不同**的 `EXPECT_EQ`（`1970==time.year`…`1==time.second`），但 gtest 断言宏的失败臂
+   调用 `AssertHelper(...)`，截断后五条逐字节相同。**v1.3 去掉截断后它们变回 10 个互不相同的串**
+   （各自带 `62/64/65/66/67`），假同一性无法再形成；顺带修好了引号被切半导致 `_STRING_LIT_RE` 失效、
+   `_condition_variables` 返回路径碎片（`home`、`project`…）从而让护栏 3 形同放行的问题。
+
+**实测基线（`tools/probe_report_consistency.py`，v1.3 产物）**：protobuf 21 份**全部 0 命中**；
+faiss 4 份不变——484-1 / 484-2 各 1 处（claims 55 / 56），`fourcc_inv_printable-5-1` 与
+`clone_index-2-1` 各 0 处。任何后续改动都必须让这两组数字保持不变。
+
+### 阶段 6b — 入口状态制造：穿过必然终止的检查（确定性，无 LLM）
+
+`entry_state.detect_fabricated_entry_state`，与 6 共用一个早返回出口。
+
+**原理**：报告的**第一步**是 `Assuming pointer value is null`——CSA 把该函数当成自己的入口，
+假设形参进来就是 null。若**该函数自己的函数体**在这条解引用之前带一个**无条件编译**的致命检查
+（`ABSL_RAW_CHECK` / `ABSL_INTERNAL_CHECK` / `ABSL_CHECK` / `GOOGLE_CHECK` / `CHECK` /
+`FAISS_THROW_IF_NOT{,_FMT,_MSG}`），条件要求这个形参**非 null**，而**报告自己的路径**又记录了在该行
+取得 **TRUE 分支**（对 `if (!(cond)) FATAL` 家族，TRUE 就是**失败臂**），则：失败臂**不返回**
+（absl 的 FATAL 处理器落到 `raw_logging.cc:183` 的 `abort()`；`FAISS_THROW_IF_NOT` 抛异常），
+于是「检查失败」与「继续解引用」**不可兼得** ⇒ 该路径不可实现 ⇒ **FP**。
+
+这条正是阶段 10「POC 自造前提」缺陷的**确定性一半**：见 §6 的说明。
+
+**为什么既有的三层都看不见**：
+
+- 模拟审计的"制造入口"规则是按 **POC 调用了哪个函数**分档的（内部/叶子/template helper、
+  被 stub 的库函数、丢掉了 override 的子类）。当被标记的函数**本身就是一个公开 API**（absl 的
+  `SimpleAtob`）时，POC 直接调用它正是提示词要求做的，一条规则都不匹配；而提示词里既没有调用方
+  证据、也没有被调函数的函数体，审计**没有证据**说明这个 null 无法到达。
+- `CHECK` 家族的**宏内部**不是 CFG/PDG 能比较的分支条件（它展开成一条**语句**，不是谓词对），
+  所以阶段 6 的同条件反向检测也看不见。
+
+**六道 soundness 护栏（全部 fail-closed，缺一即不判定）**：
+
+1. bug 类型必须含 `null`，且入口 null 假设是报告的**第 1（容忍 `Error Start` 在前时第 2）**个事件；
+2. 被解引用的变量必须取自报告**最后一个 `report` 事件**的 `loaded from variable 'V'`，且必须是
+   被标记函数的**指针形参**（成员、局部变量、无法解析的签名一律不判定）；错极性（`V == nullptr`）
+   与复合条件（`V != nullptr && x`）一律不判定——`!V` 也**不算**（它只在 V 为 null 时成立，
+   与报告假设一致而非反驳），只有偶数个 `!` 才剥；
+3. 检查必须来自**无条件编译**的家族：`assert` / `DCHECK` / `FAISS_ASSERT` **故意排除**——它们
+   在 NDEBUG 下被编译掉，这正是 CSA 的 null 得以存活的原因，据其判 FP 是不成立的；
+4. 检查必须在**解引用之前**、且在**同一函数体内**（函数范围由签名 + 花括号体求出，多行/宏生成的
+   签名直接放弃）；
+5. 宏调用必须**在本行闭合**（多行 `CHECK(a,\n b)` 放弃）且首个实参可证"要求非 null"
+   （`V != nullptr` / `NULL != V` / `V != 0` / `!!V` / 裸 `V`）；`CHECK_EQ` 这类**双操作数**
+   形式由 `(?![_A-Z])` 排除——"要求非 null"无法从首个实参表达，宁可不判；
+6. 报告**自己**必须在该行记录 `branch_condition is True`。
+
+**调用点扫描只是旁证，永不单独定论**：`scan_call_sites` 统计该函数在源码树里的真实调用点数
+（跳过注释行、`build/`、`.git` 等，有 40k 文件 / 512 MB 上限；超限返回 `None` = **未知**，绝不当作 0），
+结果只写进 reason（"共 0 个真实调用点"）。公开库 API 的调用方可能在语料之外，**"无树内调用方"**
+单独不足以判 FP——定论只来自上述 6 条（全部局部、可在报告与 bug 文件内验证）。
+
+**实测**（`tools/probe_report_consistency.py` 的 `entry-state` 段）：protobuf 21 份命中 **2** 份
+——`numbers.cc-SimpleAtob-11-1` 与 `-5-1`（形参 `out`，`ABSL_RAW_CHECK(out != nullptr, …)` @
+`numbers.cc:109`，1.0 秒内）；faiss 13 / aria2 11 / folly 8 份**全部 0 命中**（含最尖锐的回归样本
+`clone_index`——那里的 null 来自真实调用方的数据通路，按用户定标属 TP，不得命中）。
 
 ### 阶段 7 — 语义有限域冲突（LLM，枚举前）
 
@@ -331,13 +413,34 @@ leak `484-2`（FP）保持不翻转来验证。
 **leak 层**：内存泄漏类报告额外走一条 `leak_chain`（alloc → abandon → unowned）判定层，
 **仅损坏输入才能触发的泄漏判 FP**。
 
+#### "POC 自造前提"缺陷与四层修复（阶段 6b 的由来）
+
+阶段 10 原来问的是**"有没有代码能让 CSA 的前提出现在那里？"**，而不是**"真实调用方能到达这里吗？"**——
+于是**POC 自己把病理入口值传进去**也算"触发"。protobuf 的 `numbers.cc-SimpleAtob-{11,5}-1`
+（ground-truth FP）正是这样拿到 TP 的：POC 直接 `SimpleAtob(str, nullptr)`，
+而函数体 L109 的 `ABSL_RAW_CHECK(out != nullptr, …)` 是无条件编译的致命检查、失败即 `abort()`。
+四层修复（每层都可独立生效，都不加模式开关）：
+
+| 层 | 位置 | 做什么 |
+|---|---|---|
+| F1 | 阶段 6b（`entry_state.py`） | **确定性**判定：入口 null 假设 + 报告自己穿过必然终止的检查 ⇒ 枚举前 FP |
+| F2 | `source_context.extract_callee_sources` | 把报告 `Calling 'X'` 事件的**真实函数体**同时喂给 10c 生成器与 10d 审计器（原来两边都只看到 bug 文件，`time.cc` 等**异名文件**里的被调函数对审计器不可见——这正是"输出参数未写入"的错误断言得以存活的原因） |
+| F3 | `prompt_templates` | 生成提示词新增禁用捷径 (e)（按**取值来源**判：不能靠"自造入口状态"让前提成立）；规则 9 改为把 `// POC_UNREACHABLE: <理由>` 写在**首行**；模拟提示词新增"入口状态制造"条款与**调用结果的 ASSUMPTION** 条款（报告假设某次调用"返回但未写输出参数"时必须对照真实函数体验证） |
+| F4 | `simulation_verifier._is_manufactured_trigger` | 审计回复新增 `bug_value_source`（`poc_argument` / `caller_data` / `api_return` / `unknown`）：当**触发值只能来自 POC 自己的实参**时，该轮 `triggered` 覆写为 false 并判 **FP**（`poc_argument` + `triggered` 同时出现才算；其余取值一律不覆写） |
+
+**生成器自我声明的通道**（F3 的消费者）：`// POC_UNREACHABLE:` 首行由
+`prompt_templates.parse_poc_unreachable_note` 解析后，作为**"待裁决的主张"**注入审计提示词
+（只在该 POC 自己的第 1 轮生效，精化后的 POC 另行判定）。它**不能**单独定案：
+审计器必须自己复现该理由才可判 FP，措辞里明写"主张而未复现的理由不是 FP 的依据、更不是 `triggered` 的依据"。
+（历史：这条出口此前**没有消费者**——生成器明知不可达也必须假装可达。）
+
 ---
 
 ## 7. verdict 总表
 
 | verdict | 可由哪些阶段得出 |
 |---|---|
-| **FP** | 阶段 6（报告自相矛盾）、阶段 7（语义有限域冲突）、阶段 9（真·冲突式不可行）、阶段 9 的四条推广（压缩/结构性/leak 一致性/探索聚合） |
+| **FP** | 阶段 6a（报告自相矛盾）、阶段 6b（入口状态制造）、阶段 7（语义有限域冲突）、阶段 10d（`bug_value_source == poc_argument` 且 `triggered`）、阶段 9（真·冲突式不可行）、阶段 9 的四条推广（压缩/结构性/leak 一致性/探索聚合） |
 | **TP** | 阶段 9：模拟执行判定触发 bug；leak 层一致判 TP；验证出错时保留为 TP（未证实） |
 | **UNKNOWN** | 阶段 9 聚合：巨大空间的有界采样、探索中存在 unresolved |
 
@@ -362,6 +465,22 @@ leak `484-2`（FP）保持不翻转来验证。
 8. **默认 max_tokens 是 8192**（`_SIMULATION_MAX_TOKENS` 用于模拟/精修调用）；
    `finish_reason` 为 `length`/`max_tokens` 时 `_call_llm` 必须告警。
 9. **阶段 1 的路径解析必须 fail-fast**：绝不替换成别的 project（见阶段 1 的历史事故）。
+10. **产物存全量、只在渲染时截断**。`pdg_<project>.json` 里的 `expression` 是完整文本
+    （v1.3 起不再有 117 字符 cap）；需要短文本的消费者——prompt、结果 JSON——必须在**渲染**
+    时截断，绝不靠存一份被截断的产物。反例就是阶段 6 的那次误判：截断把 gtest 断言宏的五条
+    不同 `EXPECT_EQ` 压成同一段文本，"同一条件"于是被凭空建立。
+11. **阶段 6b 的致命检查家族只收无条件编译的**：`assert`/`DCHECK`/`FAISS_ASSERT` 在 NDEBUG 下
+    被编译掉（那正是 CSA 的 null 得以存活的原因），据其判 FP 不成立——不要再往里加；
+    `CHECK_EQ` 这类**双操作数**形式也故意不判（首实参表达不了"要求非 null"）。
+    **调用点扫描永远只是旁证**（写进 reason），"树内无调用方"单独不足以判 FP，也不许升级成独立判据
+    （公开库 API 的调用方可能在语料之外）。`_requires_non_null` 对 `!V`（奇数个 `!`）必须返回 False。
+12. **`bug_value_source` 的覆写是单向的**：只有 `poc_argument` **且** `triggered` 同时成立才覆写为
+    `triggered=False`/FP；其余取值（`caller_data`/`api_return`/`unknown`/缺失）一律不覆写。
+    这条不变量保护的是 `clone_index` 那类样本——null 来自**真实调用方的数据通路**时属 TP，
+    不得因为"值最终来自某个调用"就被判 FP。
+13. **被调函数体是"证据"不是"结论"**：`extract_callee_sources` 解析不出来时只输出空块，
+    由审计规则自行判断；生成器的 `POC_UNREACHABLE` 主张同样只作为**待裁决的主张**注入，
+    审计器必须自己复现才可判 FP，也不得据其判 TP。
 
 ---
 
@@ -373,7 +492,7 @@ leak `484-2`（FP）保持不翻转来验证。
 |---|---|
 | `tools/replay_steps1to6.py` | 重放确定性阶段 1–6（无 LLM），打印每段的 fn/file/CFG key/分支数。**每份报告新建 `CFGCacheSet`**，避免一份报告的 TU 影响另一份。 |
 | `tools/abc_compare.py` | 同一批报告跑两遍（A/B/C 关 vs 开），对比每段节点/分支数与整路径 bound。 |
-| `tools/probe_report_consistency.py` | 确定性阶段 1–6 + 阶段 6 的矛盾检测，打印 claim 直方图与每处矛盾。 |
+| `tools/probe_report_consistency.py` | 确定性阶段 1–6 + **阶段 6 的两条闸门**（6b 入口状态制造 + 6a 矛盾检测），打印入口状态判定、claim 直方图与每处矛盾。6b 只读报告与源码，故不依赖 PDG/CFG cache。 |
 | `tools/summarize_faiss_eval.py` | 汇总 `output/` 下的结果 JSON，按 ground truth 打分。 |
 
 **回归集**：`484-2`、`484-1`、`clone_index`（必须保持 2 段 / 4 分支 / bound 16）、
@@ -385,6 +504,24 @@ python3.10 tools/probe_report_consistency.py <484-1> <484-2> <fourcc> <clone_ind
 python3.10 tools/replay_steps1to6.py <回归集>
 python3.10 tools/abc_compare.py      <回归集>
 ```
+
+**阶段 6 的两条基线**（v1.3 产物上实测，任何改动都必须让它们保持不变）：
+
+| 语料 | 期望 |
+|---|---|
+| faiss 4 份 | `484-1` / `484-2` 各 **1** 处矛盾（claims 55 / 56），`fourcc_inv_printable-5-1` / `clone_index-2-1` 各 **0** |
+| protobuf 21 份 | **全部 0**（含曾误报的 `subprocess.cc-Start-{28,31,58}-1` 与 `time_test.cc-CmpHelperEQ-1-1`） |
+
+**阶段 6b 基线**（不需要 `--project` 的 PDG 数据也能跑；同一 `probe` 输出里的 `entry-state` 段）：
+
+| 语料 | 期望 |
+|---|---|
+| protobuf 21 份 | **2** 份命中：`numbers.cc-SimpleAtob-11-1` 与 `-5-1`（形参 `out`，`ABSL_RAW_CHECK`，调用点 0） |
+| faiss 13 / aria2 11 / folly 8 份 | **全部 0**（含 `clone_index`——那里的 null 来自真实调用方数据通路，不得命中） |
+
+判定阶段 1–9 的计数基线（v1.2 = v1.3 逐项相同）：`IndexFastScan` 44 分支、`fourcc` 1152、
+`484-1` 34 段 10152 分支、`484-2` 45 段 10136 分支、`read_VectorTransform` 119、
+`test_merge` 34、`clone_index` 2 段 4 分支 bound 16；A/B/C 在 faiss 这 7 份上是 no-op。
 
 评估脚本按 **`verdict_step` 里的中文关键字**打标记（如 `"遍历超限" in row["step"]` 标
 `traversal-limit`）——**改阶段编号时必须保留这些关键字短语**。

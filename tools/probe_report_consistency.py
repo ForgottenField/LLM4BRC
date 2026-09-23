@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
-"""Probe the deterministic report self-contradiction check on real reports.
+"""Probe the two deterministic stage-6 gates on real reports.
 
 Runs the deterministic stages (1-6) — same harness as
 ``tools/replay_steps1to6.py``, no LLM — then reports, per report:
 
+  * the fabricated-entry-state finding, if any (the report's entry null
+    assumption refuted by the bug function's own always-compiled fatal check);
   * how many (condition, direction) claims the report path yields,
   * which source lines were skipped (ambiguous node/step counts),
   * every self-contradiction found.
 
 Usage:
-    python3.10 tools/probe_report_consistency.py <report.html> [more.html ...]
+    python3.10 tools/probe_report_consistency.py [--project <name>] <report|dir> ...
+    python3.10 tools/probe_report_consistency.py --project protobuf \
+        ~/csa_reports/project/protobuf/reports
+
+The project must be named explicitly (``--project``, default ``faiss``): the
+corpus and the ``pdg_<project>.json`` are both derived from it, so a report from
+one project probed against another project's graph yields plausible-looking
+nonsense.  A directory argument expands to every ``*.html`` beneath it.
 """
 from __future__ import annotations
 
@@ -24,24 +33,45 @@ sys.path.insert(0, str(HERE / "src"))
 sys.path.insert(0, str(HERE))
 
 from run_path_selection import (  # noqa: E402
-    CFGCacheSet, _resolve_source_file_for_cfg, build_slice_mask,
-    load_sdg, parse_report, run_branch_filter,
+    CFGCacheSet, _check_pdg_artifact_version, _resolve_source_file_for_cfg,
+    build_slice_mask, load_sdg, parse_report, run_branch_filter,
 )
 from llm_client.fp_analysis.cfg_feasibility import segment_path  # noqa: E402
+from llm_client.fp_analysis.entry_state import (  # noqa: E402
+    detect_fabricated_entry_state,
+)
 from llm_client.fp_analysis.report_consistency import (  # noqa: E402
     condition_claims, detect_report_contradictions,
 )
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 
-SOURCE_ROOT = Path.home() / "csa_reports" / "project" / "faiss"
-PDG = HERE / "pdg_faiss.json"
+PROJECTS_DIR = Path.home() / "csa_reports" / "project"
+DEFAULT_PROJECT = "faiss"
+
+# Filled in by main() from --project; the probe is single-project by design.
+SOURCE_ROOT = PROJECTS_DIR / DEFAULT_PROJECT
+PDG = HERE / f"pdg_{DEFAULT_PROJECT}.json"
 
 
 def probe(report_path: Path, sdg, cache_set) -> None:
     print("=" * 78)
     print(report_path.name)
     parsed_report, bug_path = parse_report(str(report_path), SOURCE_ROOT)
+
+    # The other (and cheaper) halt-before-enumeration exit: the report's entry
+    # state is refuted by the bug function's own always-compiled fatal check.
+    # It needs only the report and the source tree — no SDG, no CFG cache — so
+    # it is probed first and stays visible on reports whose stage-1/2 data is
+    # incomplete.  Both gates share the stage-6 early return.
+    entry = detect_fabricated_entry_state(parsed_report, str(SOURCE_ROOT))
+    if entry is None:
+        print("  entry-state fabrication: none")
+    else:
+        print(f"  entry-state fabrication: ✗ {entry.guard_macro} on "
+              f"'{entry.parameter}' at L{entry.guard_line} (deref L{entry.deref_line})"
+              f"  call_sites={entry.call_sites}")
+        print(f"    reason: {entry.reason()}")
 
     bug_source = _resolve_source_file_for_cfg(parsed_report, str(SOURCE_ROOT))
     cache_set.ensure(bug_source)
@@ -79,7 +109,39 @@ def probe(report_path: Path, sdg, cache_set) -> None:
 
 
 def main(argv: list[str]) -> int:
-    reports = [Path(p) for p in argv[1:]]
+    global SOURCE_ROOT, PDG
+
+    args = argv[1:]
+    project = DEFAULT_PROJECT
+    if args and args[0] in ("--project", "-p"):
+        if len(args) < 2:
+            print("--project needs a name", file=sys.stderr)
+            return 2
+        project = args[1]
+        args = args[2:]
+
+    SOURCE_ROOT = PROJECTS_DIR / project
+    PDG = HERE / f"pdg_{project}.json"
+    if not SOURCE_ROOT.is_dir():
+        print(f"no such project corpus: {SOURCE_ROOT}", file=sys.stderr)
+        return 2
+    if not PDG.is_file():
+        print(f"no such PDG: {PDG}", file=sys.stderr)
+        return 2
+    _check_pdg_artifact_version(PDG, project)
+
+    reports: list[Path] = []
+    for raw in args:
+        p = Path(raw)
+        if p.is_dir():
+            reports.extend(sorted(p.rglob("*.html")))
+        else:
+            reports.append(p)
+    if not reports:
+        print("no reports given", file=sys.stderr)
+        return 2
+
+    print(f"project: {project}  source_root: {SOURCE_ROOT}  pdg: {PDG.name}")
     t0 = time.time()
     sdg = load_sdg(PDG)
     print(f"SDG loaded: {len(sdg.pdgs)} fn [{time.time()-t0:.1f}s]")

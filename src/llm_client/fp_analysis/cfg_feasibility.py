@@ -85,13 +85,27 @@ def _load_cfg_cache(
 def _save_cfg_cache(
     cache_path: Path,
     functions: dict[str, CFGFunction],
+    drop_raw_dump: bool = True,
 ) -> None:
-    """Save parsed CFG functions to *cache_path*."""
+    """Save parsed CFG functions to *cache_path*.
+
+    *drop_raw_dump* (the default) omits ``CFGFunction.raw_dump``.  That field is
+    a verbatim copy of the **whole translation unit's** dump, stamped onto every
+    entry by ``parse_cfg_text`` — so a cache is ``n_functions × dump_size``, not
+    ``dump_size``.  For ``clone_index.cpp`` (few functions) that is 14.1 MB →
+    0.75 MB; for protobuf's ``text_format.cc`` (3290 functions, one 3.3 MB dump)
+    it is **10.9 GB, of which the actual block data is ~1%**.
+    ``_load_cfg_cache`` already drops the field on the way in and nothing else
+    reads it, so writing it only costs disk and load time (a 10.9 GB
+    ``json.loads`` per report run).
+    """
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    data = {
-        fn_name: fn_data.model_dump(mode="json")
-        for fn_name, fn_data in functions.items()
-    }
+    data = {}
+    for fn_name, fn_data in functions.items():
+        dumped = fn_data.model_dump(mode="json")
+        if drop_raw_dump:
+            dumped.pop("raw_dump", None)
+        data[fn_name] = dumped
     cache_path.write_text(json.dumps(data, indent=2))
     logger.info("CFG cache saved: %s (%d functions)", cache_path, len(functions))
 

@@ -412,6 +412,88 @@ class SourceContextExtractor:
         return {}
 
     # ------------------------------------------------------------------
+    # Callee bodies for the report's call steps
+    # ------------------------------------------------------------------
+
+    def extract_callee_sources(
+        self,
+        parsed: ParsedReport,
+        max_functions: int = 4,
+        max_lines: int = 100,
+        skip_functions: tuple[str, ...] = (),
+    ) -> str:
+        """Source of the functions the report's path calls into.
+
+        The report's ``Calling 'X'`` steps name the callees on the reported
+        path, but the parsed report carries no source for them: the pipeline's
+        default context is the bug file only (plus same-stem companions), so a
+        callee that lives in a *differently named* file is invisible to both the
+        POC generator and the execution audit.  That blindness is what let
+        "返回前未写入的输出参数" style reports through — the refuting write lived
+        in ``time.cc`` while the flagged line was in ``time_test.cc``.
+
+        Resolution order per callee (first hit wins):
+
+        1. the directory of the *call site* (the event's own ``file_path``),
+        2. the directory of the bug file (callees usually sit beside it),
+        3. the whole project root (``find_function_definition``).
+
+        Bodies are rendered with their file path and a **body-relative** line
+        index (1 = the definition's signature line), and the header says so:
+        ``find_function_definition`` returns the body text without its starting
+        offset in the file, so numbering these as if they were file lines would
+        send a reader who greps them to an unrelated line.  Returns ``""`` when
+        nothing resolves — callers then simply omit the block.
+        """
+        events = getattr(parsed, "path_events", None) or []
+        ordered: list[str] = []
+        call_dirs: dict[str, Path] = {}
+        for evt in events:
+            if not evt.get("is_calling_event"):
+                continue
+            name = (evt.get("called_function") or "").strip()
+            if not name or name in ordered or name in skip_functions:
+                continue
+            ordered.append(name)
+            local = self._resolve_to_local(evt.get("file_path") or "")
+            if local is not None:
+                call_dirs[name] = local.parent
+        if not ordered:
+            return ""
+
+        bug_dir: Path | None = None
+        local_bug = self._resolve_to_local(
+            getattr(parsed.metadata, "bug_file", "") or ""
+        )
+        if local_bug is not None:
+            bug_dir = local_bug.parent
+
+        blocks: list[str] = []
+        for name in ordered[:max_functions]:
+            roots: list[Path] = []
+            for cand in (call_dirs.get(name), bug_dir, self.project_root):
+                if cand and cand not in roots:
+                    roots.append(cand)
+            found_file, body = self.find_function_definition(name, roots)
+            if not body:
+                logger.debug(
+                    "callee sources: no definition found for %r (roots=%s)",
+                    name, roots,
+                )
+                continue
+            body_lines = body.splitlines()[:max_lines]
+            numbered = "\n".join(
+                f"{i:>6}: {ln}" for i, ln in enumerate(body_lines, 1)
+            )
+            blocks.append(
+                f"--- Callee: {name}  ({found_file})\n"
+                f"    lines are numbered within this body (1 = its signature "
+                f"line), not by the file's own numbering ---\n{numbered}"
+                + ("\n    … (truncated)" if len(body.splitlines()) > max_lines else "")
+            )
+        return "\n\n".join(blocks)
+
+    # ------------------------------------------------------------------
     # Function body extraction
     # ------------------------------------------------------------------
 

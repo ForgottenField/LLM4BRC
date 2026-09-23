@@ -83,6 +83,9 @@ class _StubAnalyzer:
     def _format_selected_branch_blueprint(self, selections):
         return ""
 
+    def _extract_callee_sources_for_prompt(self, parsed):
+        return ""
+
 
 def _reply(conform: bool, chain: dict | None = None, triggered: bool = False) -> str:
     """A simulation reply whose step audit is conforming or not (2 steps rendered)."""

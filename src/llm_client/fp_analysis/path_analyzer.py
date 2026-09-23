@@ -911,6 +911,43 @@ _MAX_RENDERED_DECISIONS = 40
 # only the prompt rendering is bounded.
 _MAX_RENDERED_STATE_CHARS = 2000
 
+# The candidate the LLM's selection reply is read as when it is missing OR
+# unusable.  Candidate indices in the prompt are 1-based (``candidate_idx =
+# max(0, min(selected_idx - 1, ...))``), so 1 = the first candidate.
+_DEFAULT_SELECTED_CANDIDATE = 1
+
+
+def _selected_candidate_index(value: object, count: int, context: str) -> int:
+    """Coerce an LLM ``selected_candidate`` reply field to a usable 1-based index.
+
+    The reply is model output, so the field can be absent (``None``), a string
+    (``"2"`` or ``"candidate 2"``), a float, or — a real case — a degraded
+    parse left it ``None``.  ``data.get("selected_candidate", 1)`` only guards
+    the *missing* key, so a present-but-``None`` value flowed straight into
+    ``selected_idx - 1`` and killed the whole report with
+    ``TypeError: unsupported operand type(s) for -: 'NoneType' and 'int'``
+    (protobuf ``report-numbers.cc-SimpleAtob-5-1.html``).  A reply we cannot
+    read is a degraded reply, not a reason to abort: fall back to the first
+    candidate and let the caller's normal conflict checking reject it if it is
+    infeasible.
+    """
+    if isinstance(value, bool) or value is None:
+        idx = None
+    elif isinstance(value, int):
+        idx = value
+    elif isinstance(value, float) and value.is_integer():
+        idx = int(value)
+    else:
+        idx = None
+    if idx is None or not 1 <= idx <= count:
+        logger.warning(
+            "%s: unusable selected_candidate %r (expected 1..%d) — "
+            "falling back to candidate %d",
+            context, value, count, _DEFAULT_SELECTED_CANDIDATE,
+        )
+        return _DEFAULT_SELECTED_CANDIDATE
+    return idx
+
 
 class PathSpaceExhausted(Exception):
     """Raised when every candidate of a segment is already blocked, so no NEW
@@ -2394,7 +2431,10 @@ class FPAnalyzer:
                 return None
 
             # Map selected_candidate → branch_decisions
-            selected_idx = data.get("selected_candidate", 1)
+            selected_idx = _selected_candidate_index(
+                data.get("selected_candidate"), len(candidates),
+                f"segment {seg_idx} selection",
+            )
             # ── Deterministic remap (stable indices) ──
             # If the LLM picked an index that a previous attempt already tried for
             # this segment, bump it to the smallest unblocked index.  This is the
@@ -2572,7 +2612,10 @@ class FPAnalyzer:
                 return None
 
             # Map selected_candidate → branch_decisions
-            selected_idx = data.get("selected_candidate", 1)
+            selected_idx = _selected_candidate_index(
+                data.get("selected_candidate"), len(candidates),
+                f"segment {seg_idx} re-selection",
+            )
             candidate_idx = max(0, min(selected_idx - 1, len(candidates) - 1))
             chosen_decisions, _chosen_metrics = candidates[candidate_idx]
 
@@ -3081,6 +3124,29 @@ class FPAnalyzer:
     # Step 3: Generate POC via LLM
     # ------------------------------------------------------------------
 
+    def _extract_callee_sources_for_prompt(self, parsed) -> str:
+        """Bodies of the path's callees, for the POC and audit prompts.
+
+        Shared by :meth:`generate_poc` and
+        :class:`~llm_client.fp_analysis.simulation_verifier.SimulationVerifier`
+        (via ``self._analyzer``), so the generator and the auditor judge the
+        same evidence.  Always best-effort: returns ``""`` on any failure, and
+        never raises into the pipeline.
+        """
+        extractor = getattr(self, "_source_extractor", None)
+        if extractor is None or parsed is None:
+            return ""
+        try:
+            return extractor.extract_callee_sources(
+                parsed,
+                skip_functions=(
+                    getattr(parsed.metadata, "function_name", "") or "",
+                ),
+            )
+        except Exception as e:  # noqa: BLE001 — advisory context only
+            logger.warning("Callee source extraction failed: %s", e)
+            return ""
+
     def generate_poc(
         self, completed: CompletedPath, analysis: AnalysisResult,
         selected_branches: list[dict] | None = None,
@@ -3136,6 +3202,27 @@ class FPAnalyzer:
             project_specific_context=project_specific_context,
             oom_trigger_instruction=OOM_TRIGGER_INSTRUCTION,
         )
+
+        # The report's path calls into functions the bug-file window does not
+        # show (`Calling 'X'` steps whose body lives in another file).  Without
+        # them the generator cannot see whether a real caller/callee can produce
+        # the report's precondition — which is how a POC that manufactures its
+        # own entry state got written and trusted.  Advisory only: a callee that
+        # does not resolve simply yields no block.
+        callee_sources = self._extract_callee_sources_for_prompt(
+            analysis.parsed_report
+        )
+        if callee_sources:
+            prompt += (
+                "\n\n## Source of the Functions the Reported Path Calls Into\n"
+                "These are the REAL bodies of the callees on the reported path "
+                "(use them to decide whether the precondition can arise from a "
+                "real caller, and to set up real inputs — not to invent an "
+                "entry state the report's own path could never pass through). "
+                "Line numbers in each body are relative to that body, not to "
+                "the file:\n"
+                f"{callee_sources}\n"
+            )
 
         # Inject the selected feasible-path branch blueprint so the POC drives
         # the inputs along THIS specific path (P1: path-specific POC).  A
