@@ -38,7 +38,7 @@ PDG = HERE / "pdg_faiss.json"
 def replay(report_path: Path, sdg, cache_set) -> None:
     print("=" * 78)
     print(report_path.name)
-    parsed_report, bug_path = parse_report(str(report_path), SOURCE_ROOT)
+    parsed_report, bug_path, _ = parse_report(str(report_path), SOURCE_ROOT)
 
     bug_source = _resolve_source_file_for_cfg(parsed_report, str(SOURCE_ROOT))
     hit = cache_set.ensure(bug_source)

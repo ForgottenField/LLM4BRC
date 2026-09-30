@@ -31,6 +31,11 @@ from types import SimpleNamespace
 import pytest
 
 from llm_client.fp_analysis import entry_state as es
+from llm_client.report_frontend.code_model import (
+    STRATEGY_DIRECT,
+    ResolvedFile,
+    SourceCodeModel,
+)
 
 BUG_TYPE = "Dereference of null pointer"
 DEREF_LINE = 3
@@ -169,6 +174,75 @@ class TestFires:
         rep = _report(entry_index=1)
         parsed, root = _parse(tmp_path, GOOD_SOURCE, report=rep)
         assert es.detect_fabricated_entry_state(parsed, root) is not None
+
+
+# ─── the report's code model is the reader ───────────────────────────────────
+
+class _StubModel:
+    """A code model that answers from memory.
+
+    The report indexes *which* file, the code model supplies the lines; a stub
+    is the only way to show the lines came from there and not from the tree.
+    """
+
+    def __init__(self, local: Path, lines: list[str] | None):
+        self._local = local
+        self._lines = lines
+        self.asked: list[str] = []
+
+    def resolve(self, reported: str):
+        self.asked.append(reported)
+        return ResolvedFile(
+            reported=reported, local=self._local, strategy=STRATEGY_DIRECT,
+            candidates=(self._local,),
+        )
+
+    def lines(self, local):
+        return list(self._lines or [])
+
+
+class TestTheReportModelReads:
+    def _parsed(self, tmp_path, bug_file: str, model):
+        parsed = _report()
+        parsed.metadata = _metadata(tmp_path / "src/numbers.cc", bug_file=bug_file)
+        parsed.code_model = model
+        return parsed
+
+    def test_the_models_lines_are_what_the_check_reads(self, tmp_path):
+        """A tree file without the guard does not matter if the model says it is
+        there — and vice versa: the model, not the disk, is the source."""
+        plain = _write_source(tmp_path, "bool SimpleAtob(const char* s, int64_t* o) {\n"
+                                          "  *o = 1;\n  return true;\n}\n")
+        model = _StubModel(plain, GOOD_SOURCE.splitlines())
+        parsed = self._parsed(tmp_path, str(plain), model)
+        f = es.detect_fabricated_entry_state(parsed, tmp_path)
+        assert f is not None
+        assert f.guard_line == 2
+        assert model.asked == [str(plain)]
+
+    def test_a_model_without_the_check_is_silent(self, tmp_path):
+        """The mirror image: the tree *has* the check, the model does not."""
+        path = _write_source(tmp_path, GOOD_SOURCE)
+        model = _StubModel(path, [
+            "bool SimpleAtob(const char* str, int64_t* out) {",
+            "  *out = 1;",
+            "  return true;",
+            "}",
+        ])
+        parsed = self._parsed(tmp_path, str(path), model)
+        assert es.detect_fabricated_entry_state(parsed, tmp_path) is None
+
+    def test_a_name_only_match_is_refused(self, tmp_path):
+        """A same-named file elsewhere in the tree is a *different* claim, so the
+        weak rung does not answer: no finding rather than the wrong file."""
+        other = tmp_path / "other" / "numbers.cc"
+        other.parent.mkdir(parents=True)
+        other.write_text(GOOD_SOURCE)
+        parsed = _report()
+        parsed.metadata = _metadata(
+            tmp_path / "src/numbers.cc", bug_file="/build/out/numbers.cc")
+        parsed.code_model = SourceCodeModel(source_root=tmp_path)
+        assert es.detect_fabricated_entry_state(parsed, tmp_path) is None
 
 
 # ─── soundness guards: each of these must stay silent ────────────────────────

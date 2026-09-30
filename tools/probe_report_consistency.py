@@ -40,6 +40,7 @@ from llm_client.fp_analysis.cfg_feasibility import segment_path  # noqa: E402
 from llm_client.fp_analysis.entry_state import (  # noqa: E402
     detect_fabricated_entry_state,
 )
+from llm_client.fp_analysis.models import code_model_of  # noqa: E402
 from llm_client.fp_analysis.report_consistency import (  # noqa: E402
     condition_claims, detect_report_contradictions,
 )
@@ -57,7 +58,7 @@ PDG = HERE / f"pdg_{DEFAULT_PROJECT}.json"
 def probe(report_path: Path, sdg, cache_set) -> None:
     print("=" * 78)
     print(report_path.name)
-    parsed_report, bug_path = parse_report(str(report_path), SOURCE_ROOT)
+    parsed_report, bug_path, _ = parse_report(str(report_path), SOURCE_ROOT)
 
     # The other (and cheaper) halt-before-enumeration exit: the report's entry
     # state is refuted by the bug function's own always-compiled fatal check.
@@ -96,7 +97,8 @@ def probe(report_path: Path, sdg, cache_set) -> None:
         print(f"    {n:>4d}  {fn}")
 
     contradictions = detect_report_contradictions(
-        segments, parsed_report.path_events, source_root=str(SOURCE_ROOT))
+        segments, parsed_report.path_events, source_root=str(SOURCE_ROOT),
+        model=code_model_of(parsed_report))
     print(f"  contradictions: {len(contradictions)}")
     for c in contradictions:
         print(f"    ✗ {c.condition}  vars={c.variables}")

@@ -2,6 +2,28 @@
 
 Given a parsed FP report, locate the relevant source files in the project
 and extract code snippets around key locations for LLM analysis.
+
+**The report is the index, the code model is the reader.**  Everything this
+module does is "which file does the report mean, and what does it say"; the
+first half is a resolution question and the second a read, and both belong to
+the report's :class:`~llm_client.report_frontend.code_model.SourceCodeModel` —
+the single ladder and the single reader the rest of the pipeline converged on.
+The extractor keeps its own heuristics for what is *inside* a file (the
+definition-vs-call-site scanner of :meth:`SourceContextExtractor.extract_function_body`
+is the body parser, and stays), but not for which file to open.
+
+Two consequences worth stating, because both are deliberate and both change
+the text handed to a model:
+
+* **Only strong resolutions are accepted.**  ``basename``-only placement is a
+  different claim from the one the report makes — ``/usr/include/fmt/core.h``
+  is not ``<root>/lib/cpluff/.../core.h`` — and a wrong file is worse than no
+  file, so a weak rung reads as "not resolved" and the caller falls back to
+  context the report itself carries (its embedded copy).
+* **The read is the model's, even for a path it did not resolve.**  A window
+  read of an already-chosen file goes through ``model.lines`` regardless, so a
+  file is read once, through one cache, and a read the pre-load missed is
+  visible as a *lazy read* rather than as an extra loader.
 """
 
 from __future__ import annotations
@@ -12,6 +34,11 @@ from pathlib import Path
 from typing import Optional
 
 from llm_client.fp_analysis.models import ParsedReport
+from llm_client.report_frontend.code_model import (
+    KNOWN_BUILD_PREFIXES,
+    STRONG_STRATEGIES,
+    SourceCodeModel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +100,86 @@ class SourceContextExtractor:
         ".cpp",     # fallback for .cpp projects
     ]
 
-    def __init__(self, project_root: str | Path | None = None) -> None:
+    #: Where a cross-environment run keeps the checkout the report's build paths
+    #: do not match.  It is a *source root*, handed to the model like any other
+    #: — not a search of its own.
+    _LOCAL_PROJECT_DIR = "project"
+
+    def __init__(
+        self,
+        project_root: str | Path | None = None,
+        model: SourceCodeModel | None = None,
+    ) -> None:
         self.project_root = Path(project_root).resolve() if project_root else None
+        #: The reader.  ``extract``/``extract_call_chain``/
+        #: ``extract_callee_sources`` re-bind it to the *report's* own model,
+        #: which is the one carrying the revision the report embedded; the
+        #: model built here covers an extractor used without a report (a tool,
+        #: or a test that hands it a path).
+        self.model = model
+        if self.model is None:
+            self.model = SourceCodeModel(
+                source_root=self._root_for_resolution(),
+                prefixes=self._prefixes(),
+            )
+
+    def _root_for_resolution(self) -> Path | None:
+        """The tree to resolve against: the project, else the local checkout."""
+        if self.project_root is not None:
+            return self.project_root
+        local = Path(self._LOCAL_PROJECT_DIR).resolve()
+        return local if local.is_dir() else None
+
+    @staticmethod
+    def _prefixes() -> tuple[str, ...]:
+        """Build roots to recognise: the model's set plus this module's.
+
+        The model owns the ladder; this is the input that keeps it identical to
+        the one this module used to walk by hand (the aria2 build machine is in
+        this list and not in the model's).
+        """
+        return tuple(dict.fromkeys(
+            tuple(KNOWN_BUILD_PREFIXES) + tuple(_KNOWN_PATH_PREFIXES)
+        ))
+
+    def _bind(self, parsed: ParsedReport) -> SourceCodeModel:
+        """Adopt the model the report itself was loaded with.
+
+        The pipeline builds one model per report (``LoadedReport.code``) and
+        that model holds the report's embedded source, so it is the right
+        reader for every question below.  A report assembled by hand carries
+        none, and then the extractor keeps whatever it was constructed with.
+
+        A bound model with **no source root** cannot answer a locating question
+        — the ladder has no tree to climb and there is no tree index — so where
+        the extractor knows a root (``project_root``, or the ``project/``
+        checkout of a cross-environment run) it is analysed against that.  The
+        report's own copy is still what is read in that case: with nothing
+        resolvable, ``_extract_primary_source`` falls through to
+        ``parsed.source_snippets``, which the bridge serves from the model.
+        """
+        model = getattr(parsed, "code_model", None)
+        if model is not None:
+            self.model = model
+        if self.model.source_root is None:
+            root = self._root_for_resolution()
+            if root is not None:
+                self.model = SourceCodeModel(
+                    source_root=root, prefixes=self._prefixes(),
+                )
+        return self.model
+
+    def _lines_of(self, local: Path) -> list[str]:
+        """Lines of *local*, read by the code model.
+
+        Deliberately not keyed on the model *resolving* the path: the file has
+        already been chosen by the time a window is read, and routing the read
+        through the model is what makes it one cache and one counter instead of
+        a second loader beside it.  A model needs no source root to read a file
+        — only to *find* one — so this is the same call on every path, resolved
+        through the ladder or named outright.
+        """
+        return self.model.lines(local)
 
     def extract(self, parsed: ParsedReport) -> SourceContext:
         """Extract source context for a parsed report.
@@ -82,6 +187,7 @@ class SourceContextExtractor:
         Finds relevant source files and extracts code around the bug line,
         key path event locations, and companion header files.
         """
+        self._bind(parsed)
         primary_file, primary_snippets = self._extract_primary_source(parsed)
         additional_files: dict[str, dict[int, str]] = {}
 
@@ -145,26 +251,37 @@ class SourceContextExtractor:
         if not needed:
             return result
 
-        # Try companion file patterns for each needed (stem, line) pair
-        parent = primary_path.parent
-        for stem, line in sorted(needed):
-            for suffix_pattern in self._COMPANION_PATTERNS:
-                companion_name = stem + suffix_pattern
-                companion_path = parent / companion_name
-                if not companion_path.exists():
-                    continue
-                c_line_count = self._file_line_count(companion_path)
-                if c_line_count and 1 <= line <= c_line_count:
-                    snippet = self._read_code_around(companion_path, line, radius=15)
-                    if snippet:
-                        key = f"{companion_name} (near line {line})"
-                        # Merge rather than overwrite if multiple lines
-                        if key in result:
-                            result[key].update(snippet)
-                        else:
-                            result[key] = snippet
+        # Try companion file patterns for each needed (stem, line) pair.  The
+        # model looks for a sibling beside the *resolved* primary file, so the
+        # name it reports is the one that exists rather than one this module
+        # spelled; ``suffixes`` keeps this class's pattern order.
+        for _stem, line in sorted(needed):
+            windows = self._companion_windows(primary_path, line, radius=15)
+            for companion_name, snippet in windows.items():
+                key = f"{companion_name} (near line {line})"
+                # Merge rather than overwrite if multiple lines
+                if key in result:
+                    result[key].update(snippet)
+                else:
+                    result[key] = snippet
 
         return result
+
+    def _companion_windows(
+        self, primary_path: Path, line: int, radius: int
+    ) -> dict[str, dict[int, str]]:
+        """Companion-file windows around *line*, in this class's pattern order.
+
+        One entry per same-stem sibling that exists and is long enough to hold
+        *line* — the caller decides whether to merge all of them or take the
+        first.  ``suffixes`` is why this is a call and not a read: the model
+        does the looking, but the order stays this class's (``-inl.h`` before
+        ``.h``), so the sibling picked when several exist does not change.
+        """
+        return self.model.companion_window(
+            primary_path, line, radius=radius,
+            suffixes=tuple(self._COMPANION_PATTERNS),
+        )
 
     def _extract_event_context(
         self, primary_path: Path, parsed: ParsedReport, existing: dict[int, str]
@@ -238,13 +355,16 @@ class SourceContextExtractor:
 
         return result
 
-    @staticmethod
-    def _file_line_count(file_path: Path) -> int | None:
-        """Return the number of lines in a file, or None on error."""
-        try:
-            return len(file_path.read_text(encoding="utf-8", errors="replace").splitlines())
-        except Exception:
-            return None
+    def _file_line_count(self, file_path: Path) -> int | None:
+        """Number of lines in a file, or ``None`` when there is nothing to read.
+
+        An empty file counts as nothing to read rather than as zero lines: the
+        only thing the callers do with the answer is a range check that zero
+        fails anyway, and the two are indistinguishable to a reader of the
+        file — this way ``None`` means exactly "no content".
+        """
+        lines = self._lines_of(file_path)
+        return len(lines) or None
 
     def _extract_primary_source(
         self, parsed: ParsedReport
@@ -270,14 +390,13 @@ class SourceContextExtractor:
                     local_path, parsed.metadata.bug_line
                 )
 
-        # Strategy 3: Search by filename in the project
-        filename = Path(bug_file).name
-        if self.project_root:
-            for found in self.project_root.rglob(filename):
-                return str(found), self._read_code_around(
-                    found, parsed.metadata.bug_line
-                )
-
+        # There was a third strategy here — a tree-wide ``rglob`` on the file's
+        # *name* — and it was the same weak claim the resolver now refuses:
+        # a report from ``/usr/include/fmt/`` would land on the first
+        # ``core.h`` anywhere in the tree.  The fallback below is strictly
+        # better than it was, because it is the report's own copy of the file
+        # (the revision the analyzer ran on, served by the code model) rather
+        # than a same-named file from this checkout.
         logger.warning("Could not locate source file for: %s", bug_file)
         if parsed.source_snippets:
             return bug_file, parsed.source_snippets
@@ -285,41 +404,23 @@ class SourceContextExtractor:
         return None, {}
 
     def _resolve_to_local(self, file_path: str) -> Path | None:
-        """Resolve a CSA build path to a local filesystem path.
+        """Resolve a CSA build path to a local file, or ``None``.
 
-        Tries (in order):
-        1. Direct path existence (build environment path still valid).
-        2. Strip known build prefixes + join with project_root.
-        3. Search by basename under project_root.
-        4. Search by basename under local ``project/`` directory (cross-env).
+        The model's ladder decides (``direct`` → build prefix → relative →
+        suffix → basename), and only its **strong** rungs are accepted.  A
+        name-only match is not the claim the report made — ``/usr/include/fmt/
+        core.h`` and ``<root>/lib/cpluff/.../core.h`` share nothing but a name
+        — and every caller here hands the result to a model as *this file's*
+        code, so ``None`` is the honest answer and the callers' fallbacks (the
+        report's own embedded copy; the line-index path) are the ones that can
+        still be right.  A wrong file cannot.
         """
-        path = Path(file_path)
-        if path.exists():
-            return path.resolve()
-
-        if self.project_root:
-            # Try stripping known prefixes
-            for prefix in _KNOWN_PATH_PREFIXES:
-                if file_path.startswith(prefix):
-                    rel = file_path.removeprefix(prefix).lstrip("/")
-                    candidate = self.project_root / rel
-                    if candidate.exists():
-                        return candidate.resolve()
-
-            # Search by basename in project_root
-            basename = path.name
-            for found in self.project_root.rglob(basename):
-                return found.resolve()
-
-        # Fallback: search by basename in local project/ directory.
-        # This is the primary resolution mechanism when the CSA build path
-        # does not exist locally (the normal case for cross-env analysis).
-        local_project = Path("project").resolve()
-        if local_project.exists():
-            basename = path.name
-            for found in local_project.rglob(basename):
-                return found.resolve()
-
+        resolved = self.model.resolve(file_path)
+        # The same gate as ``cfg_feasibility._resolve_local_path``, spelled the
+        # same way: two seams that answer the same question must not be able to
+        # disagree about what "resolved" means.
+        if resolved.local is not None and resolved.strategy in STRONG_STRATEGIES:
+            return resolved.local
         return None
 
     @staticmethod
@@ -366,6 +467,7 @@ class SourceContextExtractor:
 
         Returns a dict keyed by ``call_site_L{line}_{function}`` → {line: code}.
         """
+        self._bind(parsed)
         additional: dict[str, dict[int, str]] = {}
 
         for evt in parsed.path_events:
@@ -397,19 +499,10 @@ class SourceContextExtractor:
         self, primary_path: Path, line: int, radius: int = 10
     ) -> dict[int, str]:
         """Try to read code around *line* from companion files of *primary_path*."""
-        parent = primary_path.parent
-        stem = primary_path.stem
-        for suffix_pattern in self._COMPANION_PATTERNS:
-            companion_name = stem + suffix_pattern
-            companion_path = parent / companion_name
-            if not companion_path.exists():
-                continue
-            c_count = self._file_line_count(companion_path)
-            if c_count and 1 <= line <= c_count:
-                snippet = self._read_code_around(companion_path, line, radius=radius)
-                if snippet:
-                    return snippet
-        return {}
+        windows = self._companion_windows(primary_path, line, radius)
+        # ``_companion_windows`` yields in pattern order, so the first one is
+        # the first pattern that matched — the same file this used to pick.
+        return next(iter(windows.values()), {})
 
     # ------------------------------------------------------------------
     # Callee bodies for the report's call steps
@@ -434,9 +527,16 @@ class SourceContextExtractor:
 
         Resolution order per callee (first hit wins):
 
-        1. the directory of the *call site* (the event's own ``file_path``),
-        2. the directory of the bug file (callees usually sit beside it),
-        3. the whole project root (``find_function_definition``).
+        1. the *call site* (the event's own ``file_path``),
+        2. the bug file (callees usually sit beside the code that calls them),
+        3. the whole project root.
+
+        All three are hints to the *same* lookup now — the call site is where
+        the search starts, and the code model widens from there (same file,
+        sibling files, its tree index, and the PDG's own answer for that name)
+        rather than this module walking each root with its own ``rglob``.  The
+        PDG's answer lands first of all, which is what keeps a name like
+        ``fourcc_inv_printable`` from resolving to the file that *calls* it.
 
         Bodies are rendered with their file path and a **body-relative** line
         index (1 = the definition's signature line), and the header says so:
@@ -445,9 +545,10 @@ class SourceContextExtractor:
         send a reader who greps them to an unrelated line.  Returns ``""`` when
         nothing resolves — callers then simply omit the block.
         """
+        self._bind(parsed)
         events = getattr(parsed, "path_events", None) or []
         ordered: list[str] = []
-        call_dirs: dict[str, Path] = {}
+        call_sites: dict[str, Path] = {}
         for evt in events:
             if not evt.get("is_calling_event"):
                 continue
@@ -457,28 +558,27 @@ class SourceContextExtractor:
             ordered.append(name)
             local = self._resolve_to_local(evt.get("file_path") or "")
             if local is not None:
-                call_dirs[name] = local.parent
+                call_sites[name] = local
         if not ordered:
             return ""
 
-        bug_dir: Path | None = None
         local_bug = self._resolve_to_local(
             getattr(parsed.metadata, "bug_file", "") or ""
         )
-        if local_bug is not None:
-            bug_dir = local_bug.parent
 
         blocks: list[str] = []
         for name in ordered[:max_functions]:
-            roots: list[Path] = []
-            for cand in (call_dirs.get(name), bug_dir, self.project_root):
-                if cand and cand not in roots:
-                    roots.append(cand)
-            found_file, body = self.find_function_definition(name, roots)
+            # The call site's own file is the nearest hint; the bug file is the
+            # next best (a callee usually sits beside the code that calls it),
+            # and the model widens from either on its own.
+            hint = call_sites.get(name) or local_bug
+            found_file, body = self.find_function_definition(
+                name, [hint] if hint else None,
+            )
             if not body:
                 logger.debug(
-                    "callee sources: no definition found for %r (roots=%s)",
-                    name, roots,
+                    "callee sources: no definition found for %r (hint=%s)",
+                    name, hint,
                 )
                 continue
             body_lines = body.splitlines()[:max_lines]
@@ -504,45 +604,26 @@ class SourceContextExtractor:
     ) -> tuple[Optional[str], Optional[str]]:
         """Search project source for a C/C++ function definition.
 
-        Searches ``.c``, ``.cc``, ``.cpp``, ``.cxx``, and ``.h`` files under
-        *search_roots* (defaults to *project_root*). Returns
-        ``(file_path, body_snippet)`` or ``(None, None)``.
+        Returns ``(file_path, body_snippet)`` or ``(None, None)``.
 
-        If nothing is found in the primary roots, falls back to the local
-        ``project/`` directory under the current working directory. This
-        handles cases where the CSA report's build path (``project_root``)
-        doesn't exist on the local machine, but project sources are available
-        locally (e.g., under ``project/aria2/deps/``).
+        The *locating* is the code model's (:meth:`SourceCodeModel.function_files`
+        — the PDG's answer first, then its tree index, both without an ``rglob``
+        per call and both preferring the files nearest *search_roots*' first
+        entry).  The *body* is still this module's scanner, because the extent
+        the PDG records begins at the function's first statement while a body
+        rendered for a model has to start at the signature — that line is where
+        the parameter types are.
         """
-        roots = search_roots or ([self.project_root] if self.project_root else [])
-        extensions = (".c", ".cc", ".cpp", ".cxx", ".h", ".hpp")
-
-        for root in roots:
-            if not root or not root.exists():
-                continue
-            for ext in extensions:
-                for fpath in root.rglob(f"*{ext}"):
-                    if not fpath.is_file():
-                        continue
-                    body = self.extract_function_body(fpath, function_name)
-                    if body:
-                        return str(fpath.resolve()), body
-
-        # Fallback: try local project/ directory when primary roots fail
-        local_project = Path("project").resolve()
-        if local_project.exists() and local_project not in roots:
-            logger.debug(
-                "Function %s not found in primary roots; falling back to %s",
-                function_name, local_project,
-            )
-            for ext in extensions:
-                for fpath in local_project.rglob(f"*{ext}"):
-                    if not fpath.is_file():
-                        continue
-                    body = self.extract_function_body(fpath, function_name)
-                    if body:
-                        return str(fpath.resolve()), body
-
+        hint = Path(search_roots[0]) if search_roots else None
+        candidates = self.model.function_files(function_name, file_hint=hint)
+        for local in candidates:
+            body = self.extract_function_body(local, function_name)
+            if body:
+                return str(local), body
+        logger.debug(
+            "function %r: scanner found no definition in %s",
+            function_name, [str(p) for p in candidates[:5]],
+        )
         return None, None
 
     def extract_function_body(
@@ -552,14 +633,10 @@ class SourceContextExtractor:
 
         Returns the full function text from the signature line to the closing
         ``}`` (inclusive), or ``None`` if the function is not found or the
-        file cannot be read.
+        file cannot be read.  The file's lines come from the code model, so
+        this reads a file once even when a report's path names it repeatedly.
         """
-        try:
-            text = Path(file_path).read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            return None
-
-        lines = text.splitlines()
+        lines = self._lines_of(Path(file_path))
         if not lines:
             return None
 
@@ -767,16 +844,20 @@ class SourceContextExtractor:
                 i += 1
         return None
 
-    @staticmethod
     def _read_code_around(
-        file_path: Path, center_line: int, radius: int = 30
+        self, file_path: Path, center_line: int, radius: int = 30
     ) -> dict[int, str]:
-        """Read source code lines around a center line."""
-        try:
-            lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except Exception:
-            return {}
+        """Read source code lines around a center line.
 
-        start = max(0, center_line - radius - 1)
+        ``[center - radius, center + radius]``, clipped to the file, blank
+        lines kept — a rendered window with a gap in its numbering says
+        something false about the file.  Read through the code model, so this
+        is the same window (:meth:`SourceCodeModel.read_range`) every other
+        rendered block in the pipeline gets.
+        """
+        lines = self._lines_of(file_path)
+        if not lines:
+            return {}
+        start = max(1, center_line - radius)
         end = min(len(lines), center_line + radius)
-        return {i + 1: lines[i] for i in range(start, end)}
+        return {n: lines[n - 1] for n in range(start, end + 1)}

@@ -15,8 +15,13 @@ This is the deterministic half of the "POC manufactures the bug's precondition"
 defect (stage 10): the pipeline used to answer "can *code* make CSA's
 precondition true?" instead of "can a real caller reach this?", so a POC that
 passes the null itself counted as a trigger.  Here the same question is answered
-from the report and the bug file alone — no path enumeration, no POC, no model
-call — and the answer is FP.
+from the report and the bug file alone — no path enumeration, no POC, no LLM —
+and the answer is FP.
+
+The bug file is located and read through the report's **code model** (the report
+indexes *which* file; the model supplies the lines), and only a strong
+resolution is accepted, so an unresolved build path yields no finding rather than
+a same-named file from elsewhere in the tree.
 
 Why the existing layers miss it
 -------------------------------
@@ -64,6 +69,9 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from llm_client.fp_analysis.models import code_model_of
+from llm_client.report_frontend.code_model import STRONG_STRATEGIES
 
 logger = logging.getLogger(__name__)
 
@@ -328,50 +336,36 @@ def _param_is_pointer_to(params: str, var: str) -> bool:
 
 # ─── source file resolution ──────────────────────────────────────────────────
 
-def _resolve_local(file_path: str, source_root: str | Path | None) -> Path | None:
-    """Map a CSA build path to the local source tree.
+def _resolve_local(file_path: str, model) -> Path | None:
+    """Map a reported path to a local file through the code model, or ``None``.
 
-    Tries the path as-is, then the longest path *suffix* under *source_root*
-    (``/home/me/projects/cpp-project/protobuf/src/a/b.cc`` →
-    ``<source_root>/src/a/b.cc``).  Longest-suffix-first is deterministic, so a
-    file whose basename occurs in several directories cannot silently resolve to
-    the wrong one.
+    The report is the index and the model is the reader, so the ladder lives in
+    one place (`report_frontend.code_model`) rather than being re-spelled here.
+    Only a **strong** rung counts: a name-only match is a different claim
+    (``/usr/include/fmt/core.h`` is not ``<root>/lib/…/core.h``) and this caller
+    treats the answer as authoritative, so ``None`` — which routes the check to
+    "cannot be made" — is the honest answer whenever the position is not pinned.
     """
     if not file_path:
         return None
-    p = Path(file_path)
-    if p.is_file():
-        return p
-    if not source_root:
-        return None
-    root = Path(source_root)
-    parts = p.parts
-    for i in range(1, len(parts)):
-        cand = root.joinpath(*parts[i:])
-        if cand.is_file():
-            return cand
+    hit = model.resolve(file_path)
+    if hit.local is not None and hit.strategy in STRONG_STRATEGIES:
+        return hit.local
     return None
 
 
-_LINE_CACHE: dict[tuple[str, float], list[str] | None] = {}
+def _read_lines(model, path: Path) -> list[str] | None:
+    """Lines of *path*, read by the code model.
 
-
-def _read_lines(path: Path) -> list[str] | None:
-    try:
-        key = (str(path), path.stat().st_mtime)
-    except OSError:
+    The model owns the file cache, so there is no second one here (this used to
+    keep an mtime-keyed copy of its own).  ``None`` — not ``[]`` — for a file
+    that cannot be read, because every caller treats "no content" as "the check
+    cannot be made" and must fail closed.
+    """
+    lines = model.lines(path)
+    if not lines:
+        logger.warning("entry-state: cannot read %s", path)
         return None
-    cached = _LINE_CACHE.get(key)
-    if cached is not None:
-        return cached
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError as e:
-        logger.warning("entry-state: cannot read %s: %s", path, e)
-        return None
-    if len(_LINE_CACHE) > 256:  # cheap bound; the pipeline is short-lived
-        _LINE_CACHE.clear()
-    _LINE_CACHE[key] = lines
     return lines
 
 
@@ -429,6 +423,13 @@ def scan_call_sites(
     source_root: str | Path | None, function_name: str,
 ) -> CallSiteScan | None:
     """Count real call sites of *function_name* under *source_root*.
+
+    Deliberately **not** routed through the report's code model: this is a whole
+    -tree search (it is looking for files the report does not name), while the
+    model is the reader *of a report's index* and would have to retain the whole
+    tree to answer.  The result is corroboration only — it appears in the reason
+    and can never be the sole basis of a verdict — so the narrower instrument is
+    the right one here.
 
     Returns ``None`` when the tree cannot be scanned (missing root, or the scan
     hit its size caps) — the caller must then treat the count as unknown, never
@@ -594,11 +595,16 @@ def detect_fabricated_entry_state(
         return None
     var = m.group(1)
 
-    # 3. the flagged function's definition in the bug file.
-    src = _resolve_local(getattr(md, "bug_file", "") or "", source_root)
+    # 3. the flagged function's definition in the bug file.  Resolved and read
+    #    through the report's own code model — the report says *which* file and
+    #    line, the model says what the code is.  The brace scan below stays a
+    #    parser over those lines: the PDG's extent begins at the first
+    #    *statement*, and step 4 needs the signature line (parameter types).
+    model = code_model_of(parsed, source_root)
+    src = _resolve_local(getattr(md, "bug_file", "") or "", model)
     if src is None:
         return None
-    lines = _read_lines(src)
+    lines = _read_lines(model, src)
     if lines is None:
         return None
     fn_name = getattr(md, "function_name", "") or ""

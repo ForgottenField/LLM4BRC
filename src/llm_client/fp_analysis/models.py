@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -137,6 +137,19 @@ class ReportMetadata(BaseModel):
     bug_description: str = Field(default="", description="Bug description")
     function_name: str = Field(default="", description="Function where bug occurs")
     path_length: int = Field(default=0, description="Number of path steps")
+    #: ``"trace"`` when the analyzer walked a path, ``"location"`` when it
+    #: stated only *where* (most CodeQL results).  A location-only report still
+    #: renders its report step, so ``path_length`` alone cannot tell the two
+    #: apart.  Defaults to the weaker reading: a caller that needs a path must
+    #: not be handed one by a report that never said so.
+    path_evidence: str = Field(
+        default="location", description="'trace' | 'location' (see report_frontend)"
+    )
+
+    @property
+    def has_path(self) -> bool:
+        """True only when the analyzer reported a step trace, not just a place."""
+        return self.path_evidence == "trace"
 
 
 class ParsedReport(BaseModel):
@@ -158,6 +171,38 @@ class ParsedReport(BaseModel):
         default_factory=list,
         description="List of 'Calling' events with function name, event number, line",
     )
+
+    #: The per-report code model — the one reader of project source for every
+    #: stage that hands code to the LLM.  Set by the bridge from the frontend's
+    #: ``LoadedReport.code``; excluded from every dump because it is a live
+    #: object holding caches, not data.  ``None`` for a report built by hand
+    #: (tests, tools) — see :func:`code_model_of`.
+    code_model: Any = Field(default=None, exclude=True, repr=False)
+
+
+def code_model_of(
+    parsed: "ParsedReport", source_root: str | None = None
+):
+    """The code model that serves *parsed*.
+
+    The report's own model is the right one where it exists: it carries the
+    copy the report *embedded*, which is the revision the analyzer ran on and
+    the only reason its line numbers mean anything.  The fallback is the
+    process-wide :func:`shared_model`, which never holds embedded source — the
+    correct answer for a report assembled by hand, but **not** a substitute for
+    the real model, so callers that can thread the report's own should.
+
+    ``getattr`` rather than attribute access: a test double standing in for
+    ``ParsedReport`` has no ``code_model`` at all.
+    """
+    from llm_client.report_frontend.code_model import shared_model
+
+    model = getattr(parsed, "code_model", None)
+    if model is not None:
+        return model
+    if source_root is None:
+        source_root = getattr(parsed, "source_root", None)
+    return shared_model(source_root)
 
 
 # ---------------------------------------------------------------------------

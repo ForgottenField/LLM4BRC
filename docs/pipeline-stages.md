@@ -13,7 +13,8 @@
 ```
                  ┌──────────────────────────────────────────────────────┐
   report.html ──▶│ 阶段 1  报告解析与工程装配                            │
-                 │    HTML → ParsedReport + bug_path                     │
+                 │    report_frontend → 规范模型 → report_bridge 渲染    │
+                 │    → ParsedReport + bug_path                          │
                  │    校验 source_root / pdg_<proj>.json / cfg_cache     │
                  └───────────────────────┬──────────────────────────────┘
                                          ▼
@@ -70,18 +71,27 @@
 
 ## 1. 阶段一览
 
+**编排住在 `fp_analysis/pipeline/`**（根目录的 `run_path_selection.py` 只是运行器：参数、`.env`、
+`main()`、以及给评测工具用的兼容再导出）。`process_report`（`pipeline/runner.py`）就是这张表本身
+——十个阶段 = 十次调用 `_stageN_*`，每个适配器的函数体是原先那个大函数的对应行范围**逐字**搬入。
+下表的"代码位置"给到模块级：`runner.*` 是阶段适配器，其余是不随阶段变化的实现模块。
+
 | # | 阶段 | 输入 | 产出 | 代码位置 |
 |---|------|------|------|----------|
-| 1 | 报告解析与工程装配 | `report.html` + `--project`/`--source-root` | `ParsedReport`, `bug_path`, `SDG`, `CFGCacheSet` | `main`, `_resolve_paths`, `_looks_like_project_root`, `parse_report`, `load_sdg`, `_resolve_cfg_cache` |
-| 2 | 路径分段 | `ParsedReport`, `SDG` | `SegmentInfo[]`（每段带 `function_file`/`function_name`） | `segment_path`（`cfg_feasibility`）, `CFGCacheSet.ensure` |
-| 3 | PDG 反向切片 | `SDG`, `bug_path` | `SliceMask`, `SliceResult` | `build_slice_mask`, `path_seed_extractor`, `slicer`, `slice_mask` |
-| 4 | 假设可行性 | `ParsedReport`, `SDG` | `hard_constraints`, `cumulative_state`（+ `FPAnalyzer`） | `FPAnalyzer.check_assumptions_feasibility` |
-| 5 | 分支过滤 | 段 + CFG cache + `SliceMask` | 每段 `consistent`/`contradictory`/`insufficient` 分支 | `run_branch_filter`, `CFGBranchExtractor`, `ConflictChecker` |
-| 6 | **确定性一致性闸门**（6a 自相矛盾 / 6b 入口状态制造） | 段的分支树 + 报告事件 + bug 文件 | **FP，直接返回** | `report_consistency.detect_report_contradictions`, `entry_state.detect_fabricated_entry_state` |
-| 7 | **语义有限域闸门** | `ParsedReport` + domain facts | **FP，直接返回** | `extract_domain_facts`/`format_domain_facts`, `FPAnalyzer.semantic_fp_reason` |
-| 8 | 路径空间收集与压缩 | 段的可行候选 | `whole_path_bound`, `node_relevance`, CI 分组 | `collect_path_space`, `classify_branch_relevance`, `reduce_path_space`, `annotate_ci_groups`, `iter_combinations` |
-| 9 | 路径选择 | 压缩后的路径空间 | 可行 `selections`（或各推广结论） | `run_path_selection`, `FPAnalyzer._select_feasible_path_segments`, `_reselect_conflicting` |
-| 10 | POC 验证与结论 | `selections` | **TP / FP / UNKNOWN** + `poc_*.cpp` | `_verify_path`, `FPAnalyzer._complete_constraints`/`generate_poc`, `SimulationVerifier` |
+| 1 | 报告解析与工程装配 | `report.html`（或 `.sarif[::finding]`）+ `--project`/`--source-root` | `ReportRef`, `LoadedReport`, `ParsedReport`, `bug_path`, `SDG`, `CFGCacheSet` | `runner._stage1_parse`/`_stage1_assemble`/`_stage1_resolve_entry`；`project_paths`（`_resolve_paths`, `_infer_source_root`, `_check_pdg_artifact_version`, `load_sdg`, `_resolve_cfg_cache`）；`stages.parse_report`/`_infer_entry_function`；`batch._collect_reports`；`ReportFrontend` → `report_bridge` |
+| 2 | 路径分段 | `ParsedReport`, `SDG` | `SegmentInfo[]`（每段带 `function_file`/`function_name`） | `runner._stage2_segment`/`_stage2_extend_caches`；`cfg_feasibility.segment_path`；`CFGCacheSet.ensure` |
+| 3 | PDG 反向切片 | `SDG`, `bug_path` | `SliceMask`, `SliceResult` | `runner._stage3_slice`；`stages.build_slice_mask`；`path_seed_extractor`, `slicer`, `slice_mask` |
+| 4 | 假设可行性 | `ParsedReport`, `SDG` | `hard_constraints`, `cumulative_state`（+ `FPAnalyzer`） | `runner._stage4_assumptions`；`FPAnalyzer.check_assumptions_feasibility` |
+| 5 | 分支过滤 | 段 + CFG cache + `SliceMask` | 每段 `consistent`/`contradictory`/`insufficient` 分支 | `runner._stage5_branch_filter`；`stages.run_branch_filter`；`CFGBranchExtractor`, `ConflictChecker` |
+| 6 | **确定性一致性闸门**（6a 自相矛盾 / 6b 入口状态制造） | 段的分支树 + 报告事件 + bug 文件 | **FP，直接返回** | `runner._stage6_gate`；`report_consistency.detect_report_contradictions`, `entry_state.detect_fabricated_entry_state` |
+| 7 | **语义有限域闸门** | `ParsedReport` + domain facts | **FP，直接返回** | `runner._stage7_preamble`/`_stage7_supplement`/`_stage7_gate`；`extract_domain_facts`/`format_domain_facts`, `FPAnalyzer.semantic_fp_reason` |
+| 8 | 路径空间收集与压缩 | 段的可行候选 | `whole_path_bound`, `node_relevance`, CI 分组 | `runner._stage8_path_space`；`collect_path_space`, `classify_branch_relevance`, `reduce_path_space`, `annotate_ci_groups`, `iter_combinations` |
+| 9 | 路径选择 | 压缩后的路径空间 | 可行 `selections`（或各推广结论） | `exploration._run_path_attempts`；`selection.run_path_selection`；`FPAnalyzer._select_feasible_path_segments`, `_reselect_conflicting` |
+| 10 | POC 验证与结论 | `selections` | **TP / FP / UNKNOWN** + `poc_*.cpp`（无路径报告直接 UNKNOWN，不生成 POC） | `exploration._run_path_attempts`/`_aggregate_exploration`；`selection._verify_path`/`_no_path_verdict`；`FPAnalyzer._complete_constraints`/`generate_poc`, `SimulationVerifier` |
+
+裁决的**归属**要在读代码前先说清：表里 9/10 那两行是**驱动**，报告级 TP/FP/UNKNOWN 由
+`_run_path_attempts` 里的四处 `concl` 分支写下，再由 `_aggregate_exploration`（扫过若干条不同
+路径之后）在必要处改写；`runner._build_output_dict` 只做序列化，不参与判断。
 
 阶段 1–3 是**纯确定性装配**；4 有 LLM；5 是确定性判定 + LLM 复核；
 **6（6a/6b）与 7 是三条"枚举前就返回 FP"的闸门**（6 的两条是确定性的，见 §3）；
@@ -97,8 +107,10 @@
 
 ### 阶段 1 — 报告解析与工程装配
 
-**做什么**：解析 CSA HTML → `ParsedReport`（bug 类型、入口函数、bug 文件、`path_events`），
-并向上装配三份数据：
+**做什么**：调用**报告前端**（`report_frontend`，见 [`report-frontend.md`](report-frontend.md)）
+把任意一种静态分析器的报告读成规范模型（一个**工作单元 = 一个 finding**：`ReportRef` 形如
+`<path>::<finding>`），再由兼容层 `report_bridge` 渲染成各阶段一直在读的
+`ParsedReport` + `bug_path`；随后向上装配三份数据：
 
 - `pdg_<project>.json`（SDG，由 C++ PDG builder 产出）
 - `cfg_cache/<project>/*.json`（按 `bug_file` 解析出入口函数对应的那份）
@@ -107,13 +119,37 @@
 **关键约束（防静默错跑）**：源根与 PDG 都**必须显式可解析**。
 `_resolve_paths` 只在推断出的根目录带有
 `deps/ lib/ src/ .git CMakeLists.txt Makefile meson.build configure setup.py` 之一时才接受它，
-否则**报错退出**并给出 `--project` / `--source-root` 的修法；`pdg_<project>.json` 缺失同样报错。
+否则**报错退出**并给出 `--project` / `--source-root` 的修法；`pdg_<project>.json` 缺失同样报错，
+版本也必须等于 `PDG_ARTIFACT_VERSION`。
 历史事故：曾把无法解析的 faiss 报告静默换成 `project/aria2`，跑出一个"看起来合理"的错误结果。
 `main()` 在**第一次 LLM 调用之前**就预解析全部报告，误调用在秒级失败而不是几十分钟后的 ERROR 行。
+
+**多格式的两个直接后果**（细节见 `report-frontend.md` §5–§7）：
+
+- 一份文档可以有多个 finding（CodeQL 的 SARIF 导出），所以结果 JSON 的身份、输出文件名与批处理
+  汇总都带 `report` / `report_file` / `finding` 三个字段。**无 selector 时 `report` 仍是原来的
+  文件名**，既有 CSA 产物逐字节不变。
+- SARIF 报告没有 `FUNCTIONNAME`，于是 `_infer_entry_function` 从 PDG 反推入口函数（同文件、行区间
+  **最紧包含** bug 行的那个），写回 `parsed_report.metadata.function_name`；报告自己说了就绝不猜。
+
+**"报告本身那一步"必须在两条表示里都成立**：`cfg_feasibility.build_bug_report_path` 历史上只认
+CSA 的 `path_number == 9999`，而桥给 SARIF 渲染的路径不带该值 → CodeQL finding 被切成 **0 段**
+（静默，不是报错）。现在桥对 `StepKind.REPORT` 写 `9999`，阶段同时接受
+`event_kind == "report"`；对 CSA 两者恒一致，故第二个判据只可能确认第一个。
 
 ### 阶段 2 — 路径分段
 
 **做什么**：按报告路径上的控制事件把 `bug_path` 切成 `SegmentInfo`（每段 = 一个函数的连续片段）。
+
+**报告没有路径时不分段**：`ReportMetadata.path_evidence`（来源是规范模型的
+`PathEvidence`，由适配器给出）为 `"location"` 时，报告只给了"在哪"而没给"怎么走到那"——
+这时**只取报告那一步所在的位置作为唯一的分析单元**，不去遍历路径、不把渲染出来的步骤当成分段边界。
+今天语料里两种读法结果相同（只有报告步时，边界本就只有它），但规则现在写明了：报告是 CodeQL
+那种"位置 + 断言"时，即使它的步骤列表长得像一条路径，也不会被当成路径切分。**矛盾要吵**：
+模型说无路径而事件里却带着 control/call 边界时打 `warning`（模型权威，不许静默二选一）。
+实测 CodeQL 语料 176 个 finding：**49 个 `trace` / 127 个 `location`**，与原始 `codeFlow`
+直方图逐项吻合。这条事实还有第二个消费点：**阶段 10 对无路径报告不作 POC 验证、直接判 UNKNOWN**
+（见 §6 开头）——分段只是第一个要问"报告有没有路径"的阶段，不是最后一个。
 
 **关键约束**：`SegmentInfo` 只带**裸方法名**，所以段的函数归属必须按 **(file, 行区间)** 解析，
 不能按名。按名会撞同名函数（`search` → `IndexPQ::search` 而非 `MultiIndexQuantizer::search`）。
@@ -384,6 +420,19 @@ leak `484-2`（FP）保持不翻转来验证。
 
 ## 6. 阶段 10 — POC 验证与结论
 
+**报告没有路径时，阶段 10 不跑，直接 UNKNOWN**（`_no_path_verdict`，进入本阶段前唯一的前置判定）。
+理由不是"省钱"而是"这条证据链缺了对照物"：阶段 9 总能**自己构造**出一条可行路径，而阶段 10 把
+候选路径变成 TP 的关键仪器是**逐步路径一致性对照**——它对照的是**报告走过的路径**。报告只给了
+位置（`path_evidence=location`）时，可对照的只剩报告那一步，审计**必然空过**，`triggered` 于是
+立在我们自己选的路径上，而不是分析器声称的那条上；这正是"POC 自造前提"的失败模式，只是从调用
+尺度升到报告尺度——**而本来能抓住它的仪器恰恰就是那个对照**。所以不生成 POC、不写
+`poc_<stem>.cpp`，直接 `verdict=UNKNOWN`，`verdict_step` 用 `报告未给出路径`（与
+`遍历超限` **刻意区分**：那条的含义是探索预算耗尽，语义不同，摘要工具按关键词取值）。
+
+**为什么这样不丢任何 sound 结论**：能**不依赖报告路径**下结论的阶段都已经跑过了——阶段 6/7，
+以及阶段 9 的"真·冲突式不可行 → FP"。方向是不对称的：**FP 说的是"可达性被证伪"，不需要自己的
+路径；TP 才是关于某条路径的断言**。
+
 对阶段 9 交来的每一条可行 `selections` 跑一遍（`_verify_path`）：
 
 | 子步 | 做什么 |
@@ -481,12 +530,41 @@ leak `484-2`（FP）保持不翻转来验证。
 13. **被调函数体是"证据"不是"结论"**：`extract_callee_sources` 解析不出来时只输出空块，
     由审计规则自行判断；生成器的 `POC_UNREACHABLE` 主张同样只作为**待裁决的主张**注入，
     审计器必须自己复现才可判 FP，也不得据其判 TP。
+14. **报告前端只做"容器 → 规范模型"的归一化**（`report-frontend.md` §8）：
+    **绝不把一种分析器的报告翻译成另一种的形状**；规范模型里没有的信号（SARIF 没有分支方向、
+    没有 `ERROR_START`）下游必须拿不到，从而停在保守态，而**不是**补一个值让它看起来完整。
+    CSA 的下游输入必须逐字节不变（`test_csa_fidelity` 的黄金对照 + 211 份语料不变量）。
+15. **代码路径解析只有一套阶梯**（`report_frontend.code_model.SourceCodeModel`）：流水线、构建工具
+    与任何新消费者共用它。`basename` 是**弱策略**（`STRONG_STRATEGIES` 不含它），歧义时用
+    `rivals`/`is_ambiguous` 判断；**绝不再自建第二套解析**（构建侧曾因缺 `relative` 一级而只能靠
+    文件名猜 SARIF 的文件）。
+15b. **交给 LLM 或闸门的项目代码也只从代码模型读**（`report-frontend.md` §7.3）：报告模型是
+    **索引**（哪个文件、哪几行），代码模型是**唯一读者**（那是什么代码）。阶段 2/6a/6b/8/9/10 的
+    每一处取码都已收敛（`code_model_of(parsed)` → `model.resolve`/`lines`/`snippet`/
+    `function_body`）。**三处声明式例外**：`entry_state.scan_call_sites`（全树找调用点，结果只是
+    旁证）、`cfg_feasibility._build_class_to_file_map`（只探测存在性、不读码，放宽会改变分段）、
+    `constraint_miner`（跨报告复用的约束知识库）。**内存出口**：结果 JSON 的
+    `code_model.code_set`（预读装下了什么）与 `code_model.lazy_reads`（之后又补读了什么）——
+    后者非空即说明这一轮不"由报告提到的文件封顶"。
+16. **一个 finding 一个工作单元**：多 finding 文档必须逐 finding 寻址（`ReportRef.key` 命名输出），
+    不许回到"报告文件 = 工作单元"。**寻址要一路走到阶段 1**：`process_report` 为了打印横幅会把参数
+    重绑成 `report_ref.path`，别再把这个裸路径传给 `parse_report`——selector 丢在这里，前端收到
+    无 selector 的 ref 面对多 finding 文档就会（正确地）拒收，于是 `--report '<doc>::<finding>'`
+    与 `--scan-dir` 展开**在阶段 1 之前全军覆没**（真语料上实测：62 个 finding 一个都跑不了）。
+17. **报告没有路径 ⇒ 不作 POC 验证 ⇒ UNKNOWN**（`_no_path_verdict`）。方向是不对称的：
+    FP 是"可达性被证伪"、不需要自己的路径，TP 才是关于某条路径的断言；而阶段 9 总能自己造出
+    一条可行路径，那条路径的 POC 过不了"对照报告路径"这道仪器（对照物不存在，必然空过）。
+    所以无路径报告可以停在阶段 6/7 或阶段 9 的冲突式 FP，但**绝不能成 TP**。
+    这条 UNKNOWN 的 `verdict_step` 关键词是 `报告未给出路径`，**与 `遍历超限` 区分**。
 
 ---
 
 ## 9. 复现与回归工具
 
-`tools/` 下的四个脚本（原在 `output/`）：
+`tools/` 下的四个脚本（原在 `output/`）。三个确定性工具是**从 `run_path_selection` 的命名空间**
+导入 `_resolve_paths`/`parse_report`/`segment_path` 这些名字的（实现搬进 `pipeline/` 后由脚本的兼容
+再导出提供，`tests/test_fp_analysis/test_pipeline_shim.py` 把这份别名表钉成契约）——**别把那段再导出
+当死代码删掉**，仓库内部没有别的地方 import 它，删了只有这三个工具会静默失败：
 
 | 脚本 | 用途 |
 |---|---|
@@ -504,6 +582,18 @@ python3.10 tools/probe_report_consistency.py <484-1> <484-2> <fourcc> <clone_ind
 python3.10 tools/replay_steps1to6.py <回归集>
 python3.10 tools/abc_compare.py      <回归集>
 ```
+
+**报告前端自查**（不需要 API key）：
+
+```bash
+python3.10 run_path_selection.py --list-formats                  # 已注册的适配器
+python3.10 run_path_selection.py --list-findings --report x.sarif # 一份文档里的 finding
+```
+
+**种子集回归**（改 `build_project_deps` 或解析阶梯后必跑）：把改动前后的
+`collect_seeds` 对同一批报告各跑一遍，比较 `bug_file` / `local_file` / `event_files` /
+`callees` / 对齐比 / `problems` / host TU。前端重构后的实测：faiss(13) / folly(8) / aria2(11) /
+protobuf(21) 共 53 份报告**全部 0 处变化、TU 集完全相同**（见 `report-frontend.md` §9）。
 
 **阶段 6 的两条基线**（v1.3 产物上实测，任何改动都必须让它们保持不变）：
 

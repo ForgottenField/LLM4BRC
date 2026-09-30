@@ -35,10 +35,13 @@ Architecture
 ------------
 ::
 
-    BugReport (HTML)  ──►  FPReportParser.parse()
-                                  │
-                           path_events: list[PathEvent]
-                                  │
+    report file (CSA HTML / SARIF / …)
+                │
+                ▼
+    report_frontend.load()  ──►  canonical model  ──►  report_bridge
+                                                             │
+                                      bug_path: BugPath (list[PathEvent])
+                                                             │
                                   ▼
                     extract_seeds_from_bug_path()
                           │

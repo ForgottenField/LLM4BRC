@@ -11,7 +11,7 @@ from pathlib import Path
 from llm_client.base import LLMConfig, LLMRequest, LLMProvider
 from llm_client.factory import ProviderFactory
 
-from llm_client.fp_analysis.html_parser import FPReportParser
+from llm_client.fp_analysis.report_bridge import to_bug_path, to_parsed_report
 from llm_client.fp_analysis.models import (
     AnalysisResult,
     CompletedPath,
@@ -19,6 +19,7 @@ from llm_client.fp_analysis.models import (
     Confidence,
     ParsedReport,
     PathAnalysis,
+    code_model_of,
 )
 from llm_client.fp_analysis.prompt_templates import (
     CONSTRAINT_COMPLETION_PROMPT,
@@ -49,6 +50,7 @@ from llm_client.fp_analysis.slice_mask import SliceMask
 # CFG-based feasibility analysis
 from llm_client.fp_analysis.cfg_feasibility import (
     extract_assumptions_from_events,
+    register_function_index,
 )
 from llm_client.fp_analysis.cfg_models import (
     AssumptionFact,
@@ -58,6 +60,10 @@ from llm_client.fp_analysis.cfg_models import (
 from llm_client.fp_analysis.cfg_branch_models import (
     CFGBranchTree,
 )
+
+# Report ingestion (stage 1).  The analyzer no longer parses reports itself:
+# it asks the frontend for a `LoadedReport` and renders it through the bridge.
+from llm_client.report_frontend import ReportFrontend, ReportRef
 
 logger = logging.getLogger(__name__)
 
@@ -990,13 +996,19 @@ class FPAnalyzer:
         max_tokens: int = 16384,
         output_dir: str | Path = "",
         pdg_path: str | Path | None = None,
+        report_format: str | None = None,
     ) -> None:
         self._model = model
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._source_root = str(Path(source_root).resolve()) if source_root else ""
         self._output_dir = Path(output_dir).resolve() if output_dir else Path("output/intermediate")
-        self._html_parser = FPReportParser()
+        # The report frontend owns parsing now; ``report_format`` pins an
+        # adapter (``--report-format``) when detection would be ambiguous.
+        self._report_format = report_format
+        self._frontend = ReportFrontend(
+            source_root=self._source_root or None, report_format=report_format,
+        )
         self._source_extractor = SourceContextExtractor(
             project_root=self._source_root or None
         )
@@ -1031,17 +1043,19 @@ class FPAnalyzer:
 
     def analyze(
         self,
-        report_path: str | Path,
+        report_path: "str | Path | ReportRef",
         source_root: str | Path | None = None,
     ) -> AnalysisResult:
-        """Parse an FP report and extract context without LLM gap analysis.
+        """Parse a report and extract context without LLM gap analysis.
 
-        In the new feasibility-driven flow, this method only parses the HTML
-        report and extracts source context.  LLM calls happen later in
+        In the new feasibility-driven flow, this method only parses the report
+        and extracts source context.  LLM calls happen later in
         ``_complete_constraints()`` and ``_check_feasibility()``.
 
         Args:
-            report_path: Path to an FP HTML report.
+            report_path: Path to a report, or a ``ReportRef``
+                (``<path>::<finding>``) selecting one finding of a multi-finding
+                document.  Any format the frontend supports.
             source_root: Optional project root for source resolution.
 
         Returns:
@@ -1056,10 +1070,26 @@ class FPAnalyzer:
             self._source_extractor = SourceContextExtractor(
                 project_root=str(source_root)
             )
+            self._frontend = ReportFrontend(
+                source_root=str(source_root), report_format=self._report_format,
+            )
 
-        # Step A: Parse the HTML report
-        parsed = self._html_parser.parse(str(report_path))
-        bug_path = self._html_parser.parse_to_bug_path(str(report_path))
+        # Step A: Parse the report (any supported format) into the pipeline's
+        # legacy view — ``report_bridge`` renders the canonical finding back
+        # into the ``ParsedReport``/``BugPath`` every stage below reads.
+        loaded = self._frontend.load(report_path)
+        parsed = to_parsed_report(loaded)
+        bug_path = to_bug_path(loaded)
+
+        # The frontend builds a code model per report and knows nothing of the
+        # PDG (it is format-only); the analyzer does, so it hands its model the
+        # answer to "where is this function defined?" before anything reads a
+        # function body through it.  Stage 2 registers the same fact on *its*
+        # model — this is a second parse of the same report, so it needs its
+        # own.
+        register_function_index(
+            code_model_of(parsed, self._source_root), self._sdg, self._source_root,
+        )
 
         # Step B: Extract source context
         source_ctx = self._source_extractor.extract(parsed)
@@ -3290,17 +3320,35 @@ class FPAnalyzer:
             return {}
 
         # 2. Find .cc/.cpp files for those classes
+        #
+        # The read goes through the report's code model (the one reader of
+        # project source).  The *lookup* is left as it is on purpose: it is a
+        # class-name heuristic scoped to ``<root>/src``, and that scoping is
+        # what it does — ``faiss`` and ``folly`` have no ``<root>/src``, so this
+        # returns ``{}`` there and always has.  Widening it to a tree-wide
+        # basename search would *activate* the index on those two projects and
+        # change the constraint-completion prompt, which is a behaviour change
+        # rather than a convergence, and a wrong ``ClassName.cc`` would map
+        # every control event on some line to another file's text at that line.
+        model = code_model_of(parsed, self._source_root)
         file_cache: dict[str, list[str]] = {}  # stem → lines
         for cn in class_names:
             for ext in (".cc", ".cpp"):
                 cf = src_dir / f"{cn}{ext}"
-                if cf.exists():
+                if not cf.exists():
+                    continue
+                hit = model.resolve(str(cf)) if model is not None else None
+                lines = model.lines(hit.local) if (model is not None and
+                                                   hit.local is not None) else None
+                if lines is None:
                     try:
-                        file_cache[cn] = cf.read_text(encoding="utf-8",
-                                                       errors="replace").splitlines()
+                        lines = cf.read_text(
+                            encoding="utf-8", errors="replace").splitlines()
                     except OSError:
-                        pass
-                    break
+                        lines = None
+                if lines is not None:
+                    file_cache[cn] = lines
+                break
 
         if not file_cache:
             return {}

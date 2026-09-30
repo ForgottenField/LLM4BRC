@@ -295,11 +295,16 @@ def _normalize(condition: str) -> str:
 
 def detect_report_contradictions(
     segments: list, path_events: list, source_root: str | None = None,
+    model=None,
 ) -> list[ReportContradiction]:
     """All same-condition-opposite-direction pairs on the report's own path.
 
     *source_root* is only used to locate the source file when a segment carries
     no absolute ``function_file``; when it cannot be read the pair is skipped.
+
+    *model* is the report's code model and is what places that file; passing it
+    is what lets the write scan actually run on a report whose ``function_file``
+    is the build machine's path (see :func:`_read_source`).
     """
     claims = condition_claims(segments, path_events)
     if not claims:
@@ -336,7 +341,9 @@ def detect_report_contradictions(
                         "not a contradiction", called, lo.line, hi.line,
                     )
                     continue
-                if not _no_write_between(lo, hi, variables, events, source_root):
+                if not _no_write_between(
+                    lo, hi, variables, events, source_root, model
+                ):
                     continue
                 seen.add(key)
                 contradictions.append(ReportContradiction(
@@ -386,7 +393,7 @@ def _condition_variables(condition: str) -> list[str]:
 
 def _no_write_between(
     lo: ConditionClaim, hi: ConditionClaim, variables: list[str],
-    events: list, source_root: str | None,
+    events: list, source_root: str | None, model=None,
 ) -> bool:
     """True when nothing between the two claims can change the condition.
 
@@ -402,7 +409,7 @@ def _no_write_between(
         )
         return False
 
-    lines = _read_source(lo.source_file, source_root)
+    lines = _read_source(lo.source_file, source_root, model)
     if lines is None:
         return False
     start = max(0, min(lo.line, hi.line) - 1)
@@ -477,13 +484,36 @@ def _intervening_call(
 _SOURCE_CACHE: dict[str, list[str] | None] = {}
 
 
-def _read_source(source_file: str, source_root: str | None) -> list[str] | None:
-    """Read the claim's source file, resolving a relative path against the root."""
+def _read_source(
+    source_file: str, source_root: str | None, model=None,
+) -> list[str] | None:
+    """Read the claim's source file, through the one code model.
+
+    The report's ``function_file`` is the *build machine's* path, so it almost
+    never exists here: the model's ladder is what places it (``resolve``).  The
+    two-candidate ladder this used to walk — the path as given, then
+    ``root / path`` — could only ever succeed for a file that was already
+    relative *and* already local, and ``root / <absolute>`` is ``<absolute>``,
+    so on the real corpus it read nothing for **141 of 211 reports**.  It failed
+    closed (``None`` → "cannot verify" → not a contradiction), which is why the
+    loss was invisible: the gate simply never fired on two thirds of the corpus.
+
+    *model* is the per-report code model; without one (a hand-built
+    ``ParsedReport`` in a test or tool) the historical candidates are still
+    tried, so the fallback is the old behaviour rather than no behaviour.
+    """
     if not source_file:
         return None
-    candidates = [source_file]
-    if not Path(source_file).is_absolute() and source_root:
-        candidates.append(str(Path(source_root) / source_file))
+    local: Path | None = None
+    if model is not None:
+        local = model.resolve(source_file).local
+    candidates: list[str] = []
+    if local is not None:
+        candidates.append(str(local))
+    else:
+        candidates.append(source_file)
+        if not Path(source_file).is_absolute() and source_root:
+            candidates.append(str(Path(source_root) / source_file))
     for cand in candidates:
         if cand in _SOURCE_CACHE:
             cached = _SOURCE_CACHE[cand]

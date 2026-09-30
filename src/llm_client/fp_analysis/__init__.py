@@ -1,8 +1,12 @@
-"""LLM-assisted false-positive detection and POC generation for CSA reports.
+"""LLM-assisted false-positive detection and POC generation for static analyzers.
 
-The pipeline itself lives in ``run_path_selection.py`` at the repo root; this
-package holds the pieces it drives — see ``docs/pipeline-stages.md`` for the
-ten ordered stages and which module serves each.
+This package holds the **engine**: the extractors, checkers, identifiers and
+models, one flat module per capability.  The **application** that drives them —
+the ten stages, the CLI's arguments, the console's output and the result JSON —
+is :mod:`llm_client.fp_analysis.pipeline`, and the repository root's
+``run_path_selection.py`` is the runner that calls it.  ``docs/pipeline-stages.md``
+is the authoritative description of the ten ordered stages and which module
+serves each.
 
 Only the live surface is re-exported here.  The package is imported by
 submodule path (``llm_client.fp_analysis.<module>``) throughout the pipeline,

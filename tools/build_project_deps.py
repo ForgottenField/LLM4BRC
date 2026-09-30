@@ -54,7 +54,6 @@ from __future__ import annotations
 import argparse
 import html as html_mod
 import json
-import os
 import re
 import subprocess
 import sys
@@ -66,9 +65,17 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from llm_client.fp_analysis import cfg_feasibility as CF  # noqa: E402
 from llm_client.fp_analysis import cfg_parser as CP  # noqa: E402
-from llm_client.fp_analysis.html_parser import FPReportParser  # noqa: E402
+from llm_client.fp_analysis.models import ParsedReport  # noqa: E402
 from llm_client.fp_analysis.pdg_loader import read_pdg_artifact_version  # noqa: E402
 from llm_client.fp_analysis.pdg_models import PDG_ARTIFACT_VERSION  # noqa: E402
+from llm_client.fp_analysis.report_bridge import to_parsed_report  # noqa: E402
+from llm_client.report_frontend import (  # noqa: E402
+    ReportFrontend,
+    ReportFrontendError,
+    ReportRef,
+    ResolvedFile,
+    SourceCodeModel,
+)
 
 #: The ONE builder binary — ``build.sh`` writes exactly this path, and the
 #: artifact's declared version is checked against it below.  A second, older
@@ -79,11 +86,12 @@ PDG_BUILDER_SRC = REPO_ROOT / "src/llm_client/csa_analysis/pdg/PDGBuilder.cpp"
 CXX = "clang++-14"
 CXX_STD = "-std=c++17"
 
-#: Prefixes CSA reports were generated under; stripped to get a project-relative path.
-REPORT_PATH_PREFIXES = (
-    "/home/me/projects/cpp-project/",
-    "/tmp/fbcode_builder_getdeps-ZhomeZmeZprojectsZcpp-projectZfollyZbuildZfbcode_builder/",
-)
+# The build roots report paths are spelled under (``/home/me/projects/cpp-project/``
+# and the folly ``fbcode_builder`` temp tree) used to be listed here as well as in
+# the frontend.  They now live in ONE place — ``report_frontend.code_model``'s
+# ``KNOWN_BUILD_PREFIXES``, which the resolver below uses by default — because two
+# copies of a prefix table drift exactly the way ``PROJECT_SPECS`` and
+# ``cfg_parser._CFG_PROJECT_CONFIGS`` keep being caught drifting.
 
 #: Per-project build spec. ``include_paths`` are relative to the project root and
 #: are the same values registered in ``cfg_parser._CFG_PROJECT_CONFIGS`` — keep the
@@ -128,8 +136,9 @@ _SOURCE_SUFFIXES = {".cc", ".cpp", ".cxx", ".c"}
 #: ``Calling 'Foo'`` / ``Returning to 'Foo'`` steps name the callee on the path.
 _CALLEE_RE = re.compile(r"(?:Calling|Entered call from|Returning to) '([^']+)'")
 
-#: basename -> paths, per source root (see ``basename_index``).
-_BASENAME_CACHE: dict[Path, dict[str, list[Path]]] = {}
+#: ``source root -> SourceCodeModel`` — the shared resolution ladder, and its
+#: tree index, kept for the duration of a run (a build seeds hundreds of events).
+_CODE_MODEL_CACHE: dict[str, SourceCodeModel] = {}
 
 #: Lines either side of the bug line compared when checking checkout alignment.
 _ALIGN_WINDOW = 8
@@ -146,9 +155,13 @@ _ALIGN_MIN_PROBES = 3
 
 @dataclass
 class ReportSeeds:
-    """What one CSA report contributes to the seed set."""
+    """What one finding of one report contributes to the seed set."""
 
     report: Path
+    #: The finding within ``report`` (``ReportRef.selector``), empty when the
+    #: document holds one finding — which every CSA report does, so the label is
+    #: the bare filename for the whole existing corpus.
+    finding: str = ""
     bug_file: str = ""
     bug_line: int = 0
     bug_function: str = ""
@@ -160,6 +173,13 @@ class ReportSeeds:
     line_probe: int = 0
     problems: list[str] = field(default_factory=list)
 
+    @property
+    def label(self) -> str:
+        """How this seed is named in the log and the gap report."""
+        if not self.finding:
+            return self.report.name
+        return f"{self.report.name}::{self.finding}"
+
 
 # ─── path resolution ──────────────────────────────────────────────────────────
 
@@ -167,47 +187,42 @@ class ReportSeeds:
 def resolve_source(raw: str, root: Path) -> Path | None:
     """Map a report's source path to a real file under *root*.
 
-    Order matters: the prefix-stripped relative path is authoritative, the
-    basename search is a last resort because protobuf/abseil both define
+    The ladder itself lives in the report frontend (``SourceCodeModel``), which
+    is also what ``run_path_selection`` and the pipeline's stage 1 use — one
+    resolver, so a path spelled the same way cannot resolve one way here and
+    another way there.  Order matters and the model's is: the path as given, a
+    known build root stripped, relative-to-root, longest suffix, and only then
+    the basename — which is a last resort because protobuf/abseil both define
     same-named files (``numbers.cc``, ``time.cc``) in several directories.
     """
-    if not raw:
-        return None
-    direct = Path(raw)
-    if direct.is_absolute() and direct.exists():
-        return direct.resolve()
-
-    for prefix in REPORT_PATH_PREFIXES:
-        if raw.startswith(prefix):
-            tail = raw[len(prefix):]
-            parts = tail.split("/")
-            for cut in range(len(parts)):
-                candidate = root / "/".join(parts[cut:])
-                if candidate.exists():
-                    return candidate.resolve()
-
-    hits = basename_index(root).get(Path(raw).name, [])
-    return hits[0] if hits else None
+    return resolve_reported(raw, root).local
 
 
-def basename_index(root: Path) -> dict[str, list[Path]]:
-    """Lazy ``basename -> [paths]`` index of the source tree.
+def resolve_reported(raw: str, root: Path) -> ResolvedFile:
+    """Resolve a reported path, keeping *how* it matched.
 
-    Built once per root: the basename fallback runs per report event, and a
-    filesystem walk per event over protobuf + abseil is minutes of wall clock.
+    The strategy is for the caller's judgement, not for the mapping: it is the
+    difference between "the report's own path exists here" and "some file under
+    this tree happens to share the basename".  A basename match records its
+    rivals (``ResolvedFile.is_ambiguous``/``rivals``) precisely because the pick
+    is alphabetical — a wrong one silently builds a TU that does not contain the
+    report's function.
     """
-    cached = _BASENAME_CACHE.get(root)
-    if cached is not None:
-        return cached
-    index: dict[str, list[Path]] = {}
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in (".git", "__pycache__")]
-        for name in filenames:
-            index.setdefault(name, []).append(Path(dirpath) / name)
-    for paths in index.values():
-        paths.sort()
-    _BASENAME_CACHE[root] = index
-    return index
+    return _code_model_for(root).resolve(raw)
+
+
+def _code_model_for(root: Path) -> SourceCodeModel:
+    """The shared resolver for *root* (its tree index is built once, lazily).
+
+    Default prefixes on purpose: the build-root spellings are the frontend's
+    knowledge, and this tool has no reason to hold a second copy of them.
+    """
+    key = str(root)
+    model = _CODE_MODEL_CACHE.get(key)
+    if model is None:
+        model = SourceCodeModel(source_root=root)
+        _CODE_MODEL_CACHE[key] = model
+    return model
 
 
 def verify_corpus_alignment(snippets: dict, files: list[Path], bug_line: int,
@@ -297,37 +312,78 @@ def verify_line_alignment(snippets: dict, local_file: Path, bug_line: int,
 # ─── seed collection ──────────────────────────────────────────────────────────
 
 
+def _seeds_from_report(path: Path, root: Path,
+                       parsed: ParsedReport) -> ReportSeeds:
+    """One parsed report → the TUs it asks for.
+
+    A bug file placed by *name alone* is refused: the seed set decides which TUs
+    the PDG is built from, so a guessed host TU produces an artifact that is
+    missing the report's own function — and nothing downstream can tell that
+    from a report whose function was never there.  An ambiguous *event* file is
+    kept instead: it only widens the build, and the position it holds is not the
+    one the analysis starts from.
+    """
+    rs = ReportSeeds(
+        report=path,
+        bug_file=parsed.metadata.bug_file or "",
+        bug_line=int(parsed.metadata.bug_line or 0),
+        bug_function=parsed.metadata.function_name or "",
+    )
+    if not rs.bug_file:
+        rs.problems.append("report has no bug_file")
+    for evt in parsed.path_events:
+        raw = evt.get("file_path") or ""
+        hit = resolve_reported(raw, root)
+        if hit.resolved:
+            rs.event_files.add(hit.local)
+        elif raw:
+            rs.problems.append(f"unresolved event file: {raw}")
+        desc = evt.get("description") or ""
+        rs.callees.update(_CALLEE_RE.findall(desc))
+    host = resolve_reported(rs.bug_file, root)
+    rs.local_file = host.local
+    if rs.local_file is None:
+        if rs.bug_file:
+            rs.problems.append(f"unresolved bug file: {rs.bug_file}")
+    elif host.is_ambiguous:
+        # Every file sharing the name, not just the ones passed over: the
+        # operator has to see which TU the resolver *would* have used as well.
+        matches = ", ".join(str(p.relative_to(root)) for p in host.candidates[:4])
+        rs.problems.append(
+            f"bug file {Path(rs.bug_file).name!r} matches "
+            f"{len(host.candidates)} files by basename ({matches}"
+            f"{', …' if len(host.candidates) > 4 else ''}) — cannot tell which "
+            f"TU the report ran on"
+        )
+    else:
+        candidates = [rs.local_file, *sorted(rs.event_files)]
+        _f, ratio, offset, probe = verify_corpus_alignment(
+            parsed.source_snippets, candidates, rs.bug_line)
+        rs.line_match, rs.line_offset, rs.line_probe = ratio, offset, probe
+    return rs
+
+
 def collect_seeds(report_paths: list[Path], root: Path) -> list[ReportSeeds]:
-    parser = FPReportParser()
+    """Every finding of every report → its :class:`ReportSeeds`.
+
+    Parsed through the report frontend, so a CSA HTML directory and a SARIF
+    export are seeded by the same code; ``expand`` yields one seed per finding,
+    because a SARIF document holds many and each names its own host file.
+    """
+    frontend = ReportFrontend(source_root=root)
     seeds: list[ReportSeeds] = []
     for path in report_paths:
-        parsed = parser.parse(str(path))
-        rs = ReportSeeds(
-            report=path,
-            bug_file=parsed.metadata.bug_file or "",
-            bug_line=int(parsed.metadata.bug_line or 0),
-            bug_function=parsed.metadata.function_name or "",
-        )
-        if not rs.bug_file:
-            rs.problems.append("report has no bug_file")
-        for evt in parsed.path_events:
-            raw = evt.get("file_path") or ""
-            resolved = resolve_source(raw, root)
-            if resolved:
-                rs.event_files.add(resolved)
-            elif raw:
-                rs.problems.append(f"unresolved event file: {raw}")
-            desc = evt.get("description") or ""
-            rs.callees.update(_CALLEE_RE.findall(desc))
-        rs.local_file = resolve_source(rs.bug_file, root)
-        if rs.local_file is None and rs.bug_file:
-            rs.problems.append(f"unresolved bug file: {rs.bug_file}")
-        else:
-            candidates = [rs.local_file, *sorted(rs.event_files)]
-            _f, ratio, offset, probe = verify_corpus_alignment(
-                parsed.source_snippets, candidates, rs.bug_line)
-            rs.line_match, rs.line_offset, rs.line_probe = ratio, offset, probe
-        seeds.append(rs)
+        for ref in frontend.expand([ReportRef(path)]):
+            try:
+                loaded = frontend.load(ref)
+            except ReportFrontendError as exc:
+                rs = ReportSeeds(report=path)
+                rs.problems.append(f"unreadable report: {exc}")
+                seeds.append(rs)
+                continue
+            rs = _seeds_from_report(path, root, to_parsed_report(loaded))
+            rs.finding = ref.selector
+            seeds.append(rs)
     return seeds
 
 
@@ -750,7 +806,14 @@ def main() -> int:
         reports: list[Path] = []
         for item in args.on_demand:
             p = Path(item).expanduser()
-            reports.extend(sorted(p.rglob("*.html")) if p.is_dir() else [p])
+            # ``report-*.html`` is the CSA corpus layout; ``*.sarif`` is what a
+            # CodeQL/Infer/Cppcheck export lands as.  Both seed the same way —
+            # ``collect_seeds`` parses through the report frontend.
+            if p.is_dir():
+                found = sorted(p.rglob("report-*.html")) + sorted(p.rglob("*.sarif"))
+                reports.extend(found or sorted(p.rglob("*.html")))
+            else:
+                reports.append(p)
         log(f"[1] seeds from {len(reports)} report(s)")
         seeds = collect_seeds(reports, root)
     else:
@@ -771,7 +834,7 @@ def main() -> int:
                 f"(< --min-line-match {args.min_line_match:.0%})")
         if rs.problems:
             gaps.append(rs)
-            log(f"    GAP {rs.report.name}: {'; '.join(rs.problems)}")
+            log(f"    GAP {rs.label}: {'; '.join(rs.problems)}")
             continue
         tu = host_tu_for(rs, root)
         if tu:
@@ -799,7 +862,7 @@ def _finish(args, spec, root: Path, flags: list[str], tus: list[Path],
             seeds: list[ReportSeeds], log, gaps: list | None = None) -> int:
     summary: dict = {"project": args.project, "root": str(root),
                      "tus": [str(t) for t in tus],
-                     "gaps": [{"report": g.report.name, "problems": g.problems}
+                     "gaps": [{"report": g.label, "problems": g.problems}
                               for g in (gaps or [])]}
     log(f"[3] flags: {' '.join(flags)}")
     if not check_builder(log):

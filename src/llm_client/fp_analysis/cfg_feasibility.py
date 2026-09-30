@@ -33,7 +33,8 @@ from llm_client.fp_analysis.cfg_parser import (
     parse_cfg_text,
     run_cfg_dump,
 )
-from llm_client.fp_analysis.models import ParsedReport
+from llm_client.fp_analysis.models import ParsedReport, code_model_of
+from llm_client.report_frontend.code_model import STRONG_STRATEGIES, shared_model
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,7 @@ def build_bug_report_path(
     parsed: ParsedReport,
     sdg: "SDG | None" = None,
     source_root: str | None = None,
+    model=None,
 ) -> BugReportPath:
     """Build a structured ``BugReportPath`` from a parsed CSA report.
 
@@ -145,6 +147,11 @@ def build_bug_report_path(
     meta = parsed.metadata
     events = parsed.path_events
     path_nodes: list[PathNode] = []
+    if model is None:
+        # The report's own model when it has one (it carries the revision the
+        # report embedded); otherwise one rooted at *source_root*, which is what
+        # a hand-built ``ParsedReport`` in a test or tool gets.
+        model = code_model_of(parsed, source_root)
 
     # Resolve the base source file (via source_root when the report's stale
     # bug_file path doesn't exist on this machine).
@@ -154,6 +161,7 @@ def build_bug_report_path(
     # SDG's node lines).  Consulted first; the heuristic scanner is the
     # fallback for files the PDG doesn't cover.
     pdg_fn_index = _build_pdg_fn_index(sdg, source_root)
+    register_function_index(model, sdg, source_root)
 
     # ── Build class-to-file map from CALL event descriptions ──
     class_to_file = _build_class_to_file_map(
@@ -188,12 +196,10 @@ def build_bug_report_path(
     multi_file_lines: dict[str, list[str]] = {}
     multi_boundaries: dict[str, list[tuple[str, int, int]]] = {}
     for fkey, fpath in all_files.items():
-        try:
-            flines = fpath.read_text(encoding="utf-8", errors="replace").splitlines()
+        flines = model.lines(fpath) if model is not None else _read_text_lines(fpath)
+        if flines:
             multi_file_lines[fkey] = flines
             multi_boundaries[fkey] = _find_function_boundaries(fpath, flines)
-        except OSError:
-            pass
 
     # Fallback: use bug_file boundaries for backward compatibility
     if bug_file and bug_file.exists():
@@ -216,7 +222,12 @@ def build_bug_report_path(
             ntype = NodeType.ERROR_START
         elif evt.get("is_calling_event"):
             ntype = NodeType.CALL
-        elif pn == 9999:
+        elif pn == 9999 or evt.get("event_kind") == "report":
+            # 9999 is CSA's EndPath marker; ``event_kind == "report"`` is the
+            # format-independent spelling of the same fact, and
+            # ``report_bridge`` emits both for a non-CSA finding (which has no
+            # EndPath).  For CSA the two always agree, so the second test can
+            # only ever confirm the first.
             ntype = NodeType.REPORT
         elif evt.get("is_control_flow") and evt.get("branch_condition") in (True, False):
             ntype = NodeType.CONTROL
@@ -321,6 +332,7 @@ def build_bug_report_path(
         bug_file=str(bug_file) if bug_file else meta.bug_file,
         bug_type=meta.bug_type,
         bug_description=meta.bug_description,
+        code_model=model,
     )
 
 
@@ -599,11 +611,45 @@ def segment_path(
     report_path = build_bug_report_path(parsed, sdg=sdg, source_root=source_root)
     nodes = report_path.nodes
 
-    # Collect boundary nodes: CONTROL, CALL, and REPORT (bug report point)
-    boundaries: list[PathNode] = [
+    # Collect boundary nodes: CONTROL, CALL, and REPORT (bug report point).
+    #
+    # When the report states no path (``metadata.has_path`` — see
+    # ``ReportMetadata.path_evidence``), there is nothing to segment: the
+    # analyzer gave *where*, not *how*, so the only boundary is the report
+    # step itself and the reported location's own function is the analysis
+    # unit.  A location-only finding still renders a report step — that is why
+    # the distinction is carried as a fact rather than read off the event
+    # count — and segmenting "its path" would manufacture boundaries the
+    # analyzer never reported.  For every report in the corpus today the two
+    # readings coincide (a lone report step was already the only boundary);
+    # this states the rule so a path-shaped rendering cannot be segmented as
+    # one by accident.
+    path_boundaries: list[PathNode] = [
         n for n in nodes
         if n.node_type in (NodeType.CONTROL, NodeType.CALL, NodeType.REPORT)
     ]
+    if parsed.metadata.has_path:
+        boundaries = path_boundaries
+    else:
+        # The model is authoritative — it is what the analyzer stated — so a
+        # contradiction is *reported*, not silently resolved by keeping the
+        # events: a report whose own steps say "no path" while rendering
+        # control boundaries is a bug upstream, and the operator should see it
+        # rather than have the pipeline quietly analyse either reading.
+        boundaries = [n for n in path_boundaries if n.node_type is NodeType.REPORT]
+        if len(boundaries) != len(path_boundaries):
+            logger.warning(
+                "report states no path (path_evidence=%s) but %d path boundary "
+                "node(s) are present — segmenting the reported location only",
+                parsed.metadata.path_evidence,
+                len(path_boundaries) - len(boundaries),
+            )
+        else:
+            logger.info(
+                "report states no path (path_evidence=%s) — segmenting the "
+                "reported location instead of a path",
+                parsed.metadata.path_evidence,
+            )
     if not boundaries:
         return []
 
@@ -1263,52 +1309,39 @@ def run_feasibility_analysis(
     return result
 
 
+def _read_text_lines(path: Path) -> list[str]:
+    """A file's lines, or ``[]`` — only for callers with no code model.
+
+    Every caller in the pipeline has one; this exists so a hand-built
+    ``ParsedReport`` (tests, tools) still gets its source read.
+    """
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+
+
 def _resolve_source_file_for_cfg(
     parsed: ParsedReport,
     source_root: str | None = None,
 ) -> Path | None:
-    """Resolve the source file path for CFG dumping.
+    """Resolve the bug file for CFG dumping — through the one ladder.
 
-    Uses the same resolution strategy as ``SourceContextExtractor``
-    but returns a ``Path`` directly.
+    This used to carry its own five-rung walk (direct existence, the hardcoded
+    build prefixes, a suffix scan, then an ``rglob`` of ``./project``).  It was
+    a *weaker* copy of the frontend's ladder, not a different answer: on all
+    211 reports of the CSA corpus the only two paths where the two disagreed
+    were ones the model places by **basename** — which
+    :func:`_resolve_local_path` refuses on purpose, so delegating leaves every
+    one of those 211 answers unchanged.
+
+    A name-only match is a different claim from a positional one, and this
+    result is handed to the CFG cache as authoritative.  ``None`` here means
+    "no CFG for the bug file", which stage 5 already tolerates (the segments'
+    own function files carry the branch trees); a *wrong* file would put another
+    function's CFG under this report's bug file.
     """
-    from llm_client.fp_analysis.source_context import (
-        _KNOWN_PATH_PREFIXES,
-    )
-
-    bug_file = parsed.metadata.bug_file
-    path = Path(bug_file)
-
-    # Direct existence
-    if path.exists():
-        return path.resolve()
-
-    # Strip known prefixes
-    for prefix in _KNOWN_PATH_PREFIXES:
-        if bug_file.startswith(prefix):
-            rel = bug_file.removeprefix(prefix).lstrip("/")
-            if source_root:
-                candidate = Path(source_root) / rel
-                if candidate.exists():
-                    return candidate.resolve()
-
-    # Suffix matching under source_root — the report's absolute path is from a
-    # different build machine, so try each suffix (e.g. ``folly/Format.cpp``)
-    # against source_root (mirrors ``_resolve_source_path`` in path_analyzer).
-    if source_root:
-        parts = Path(bug_file).parts
-        for i in range(1, len(parts)):
-            cand = Path(source_root).joinpath(*parts[i:])
-            if cand.exists():
-                return cand.resolve()
-
-    # Search in project/ directory by filename
-    local_project = Path("project").resolve()
-    if local_project.exists():
-        for found in local_project.rglob(path.name):
-            return found.resolve()
-
-    return None
+    return _resolve_local_path(parsed.metadata.bug_file, source_root)
 
 
 # ---------------------------------------------------------------------------
@@ -1321,20 +1354,30 @@ def _resolve_local_path(p: Path | str, source_root: str | None) -> Path | None:
 
     The CSA report's file paths come from a different build machine and may
     not exist here; the PDG ``source_file`` is the (possibly non-existent)
-    build path too.  We suffix-match under *source_root* (mirrors
-    ``_resolve_source_path`` in path_analyzer) so the resulting local path is
-    keyed consistently with ``build_bug_report_path``'s ``all_files``.
-    Returns ``None`` when no local file can be found.
+    build path too.  The mapping is the frontend's single ladder
+    (``SourceCodeModel``), so the local path is keyed consistently with
+    ``build_bug_report_path``'s ``all_files``.  Returns ``None`` when no local
+    file can be found.
+
+    This used to walk suffixes here, dropping leading path components until one
+    existed — which can place an absolute build path but **cannot place a
+    relative one**, because there is no leading component to drop:
+    ``src/fmt.cc`` (a SARIF ``uri``, relative to the analysis root) tried
+    ``<root>/fmt.cc`` and gave up, while the file is at ``<root>/src/fmt.cc``.
+    Every event of such a report therefore fell out of ``event_files`` and into
+    ``_resolve_event_file``'s line-number guess, which lands on whatever file
+    happens to share the line.  One ladder, not two.
+
+    Only the rungs that pin a *position* are accepted (``STRONG_STRATEGIES``).
+    A name-only match is a different kind of answer — `/usr/include/fmt/core.h`
+    is not `lib/cpluff/examples/cpfile/plugins/core/core.h` — and its caller
+    here would treat it as authoritative, whereas returning ``None`` sends the
+    event through the line-index fallback, which is **restricted to the files
+    the report itself mentions**.  A wrong file is worse than no file.
     """
-    path = Path(p)
-    if path.exists():
-        return path.resolve()
-    if source_root:
-        parts = path.parts
-        for i in range(1, len(parts)):
-            cand = Path(source_root).joinpath(*parts[i:])
-            if cand.exists():
-                return cand.resolve()
+    hit = shared_model(source_root).resolve(str(p))
+    if hit.local is not None and hit.strategy in STRONG_STRATEGIES:
+        return hit.local
     return None
 
 
@@ -1375,6 +1418,48 @@ def _build_pdg_fn_index(
     return index
 
 
+def register_function_index(model, sdg, source_root) -> None:
+    """Hand *model* the SDG's answer to "where is this function defined?".
+
+    Where a function lives is a fact the PDG records and a brace scan only
+    guesses at (it misses a body nested inside another's, e.g.
+    ``SocketAddress::setFromLocalAddr``, and a name alone lands on same-named
+    functions from other classes).  Every consumer that asks the code model for
+    a function body gets the accurate answer only once this has run for *that*
+    model — and there is more than one model per report: the pipeline parses
+    the report again for the POC stage, and that parse builds its own.  So the
+    registration is a function of ``(model, sdg)`` rather than a side effect of
+    ``build_bug_report_path``, which only ever touched the segmentation model.
+
+    Safe to call twice, and safe to call on a hand-built report: the model
+    refuses the write when it is the process-wide ``shared_model`` (the index
+    belongs to one report's SDG and would leak across reports).
+    """
+    if model is None or sdg is None:
+        return
+    model.set_function_index(_fn_index_by_name(_build_pdg_fn_index(sdg, source_root)))
+
+
+def _fn_index_by_name(
+    by_file: dict[str, list[tuple[str, int, int]]],
+) -> dict[str, list[tuple[Path, int, int]]]:
+    """Invert :func:`_build_pdg_fn_index` into ``{name: [(file, start, end)]}``.
+
+    The two directions serve two questions.  Segmentation asks "which functions
+    live in this file" and walks a path file by file; a caller of the code
+    model asks "where is ``read_index`` defined" and has only a name — and a
+    name is exactly the ambiguous key, so the model also needs the *file* to
+    prefer the one nearest the call site (:meth:`SourceCodeModel.function_body`
+    takes a ``file_hint``).
+    """
+    index: dict[str, list[tuple[Path, int, int]]] = {}
+    for local_str, entries in by_file.items():
+        local = Path(local_str)
+        for name, start, end in entries:
+            index.setdefault(name, []).append((local, start, end))
+    return index
+
+
 def _build_class_to_file_map(
     events: list[dict],
     source_root: str | None = None,
@@ -1385,6 +1470,15 @@ def _build_class_to_file_map(
     Extracts class names from patterns like ``"Calling 'ClassName::method'"``
     and searches for ``ClassName.cc`` / ``.cpp`` files in the project source
     tree.  Used as a fallback when the SDG is unavailable.
+
+    **Deliberately not routed through the code model** — the one liveness probe
+    in this module that stays where it is.  It reads no code (``is_file`` only),
+    so the "the model is the only reader" rule has nothing to gain here, and the
+    model's instrument for a name is its whole-tree index: widening these probes
+    to the tree would *add* files for class names whose ``<Name>.cc`` sits
+    somewhere else, i.e. it would activate this heuristic on events it currently
+    declines — a segmentation change, not a read change.  The scope stays
+    exactly the directories below (the bug file's own, ``src/``, the root).
     """
     # Determine search directories
     search_dirs: list[Path] = []

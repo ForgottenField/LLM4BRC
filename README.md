@@ -88,7 +88,7 @@ leak 层一致性推广、路径探索聚合——它们让**一条路径上的�
 ## 3. 仓库结构
 
 ```
-run_path_selection.py          # 端到端入口：10 阶段流水线 + CLI
+run_path_selection.py          # 薄运行器：argparse + .env + main + 兼容再导出（约 216 行）
 src/llm_client/
   ├── base.py / factory.py     # LLMProvider 抽象层（deepseek / claude / gpt）
   ├── errors.py                # 统一异常层级（provider 不许抛裸 SDK 错误）
@@ -103,7 +103,12 @@ src/llm_client/
   │   ├── entry_state.py                            # 阶段 6b
   │   ├── domain_facts.py                           # 阶段 7 补充事实
   │   ├── simulation_verifier.py                    # 阶段 10d 模拟执行审计
-  │   └── path_analyzer.py                          # LLM 驱动的选路/POC 生成
+  │   ├── path_analyzer.py                          # LLM 驱动的选路/POC 生成
+  │   └── pipeline/                                 # ★ 应用层：10 阶段编排 + CLI 语义
+  │       ├── runner.py                             #   process_report = 十次 _stageN_* 调用
+  │       ├── exploration.py                        #   尝试循环 + 事后聚合（唯一能推翻裁决处）
+  │       ├── stages.py  selection.py               #   阶段 1–5 驱动 / 阶段 9–10 驱动 + 判决文案
+  │       ├── project_paths.py  artifacts.py  batch.py  models.py  layout.py
   └── csa_analysis/            # C++ 原生工具（PDG / 调用图 / 可达性 checker）
       ├── pdg/PDGBuilder.cpp      build.sh   ← pdg_<project>.json 的生产者
       ├── callgraph/              build.sh

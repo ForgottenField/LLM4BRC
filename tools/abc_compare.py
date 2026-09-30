@@ -72,7 +72,7 @@ def _count_nodes(nodes) -> int:
 def _run(label, report_path, sdg, source_root, annotations, want_dense):
     cache_set = CFGCacheSet(project_name=source_root.name,
                             source_root=str(source_root))
-    parsed_report, bug_path = parse_report(str(report_path), source_root)
+    parsed_report, bug_path, _ = parse_report(str(report_path), source_root)
     bug_source = _resolve_source_file_for_cfg(parsed_report, str(source_root))
     cache_set.ensure(bug_source)
 

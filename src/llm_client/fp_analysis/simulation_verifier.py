@@ -31,6 +31,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 
+from llm_client.fp_analysis.models import code_model_of
 from llm_client.fp_analysis.prompt_templates import (
     MEMORY_LEAK_SIMULATION_RULES,
     SIMULATION_PROMPT,
@@ -344,6 +345,39 @@ class SimulationResult:
         )
 
 
+def _step_source_line(
+    file_path, line, bug_file: str, snippets: dict, model,
+) -> str | None:
+    """The source text of one report step, keyed by **(file, line)**.
+
+    The bug file's own embedded window is preferred for its own steps — it is
+    the revision the analyzer ran on.  Any other step is read from *its* file
+    through the code model, never from the bug file's window at that line
+    number: two files routinely share a line, and the audit reads this text as
+    the step's code.
+    """
+    if not line:
+        return None
+    try:
+        n = int(line)
+    except (TypeError, ValueError):
+        return None
+    if n <= 0:
+        return None
+    in_bug_file = (not file_path) or str(file_path) == bug_file
+    if not in_bug_file and file_path and bug_file and model is not None:
+        a = model.resolve(str(file_path)).local
+        b = model.resolve(bug_file).local
+        in_bug_file = bool(a and b and a == b)
+    if in_bug_file:
+        code = snippets.get(n)
+        if code:
+            return code
+    if model is not None and file_path:
+        return model.snippet(str(file_path), n, radius=0).get(n) or None
+    return None
+
+
 class SimulationVerifier:
     """Generate-free TP validation: LLM simulates a POC, with a refine loop."""
 
@@ -395,6 +429,14 @@ class SimulationVerifier:
         if not events:
             return []
         snippets = getattr(pr, "source_snippets", {}) or {}
+        # ``source_snippets`` is the **bug file's** window.  Looking a foreign
+        # step's line up in it by line number alone showed that step another
+        # file's text at the same line — the cross-section bleed, and a
+        # particularly bad one here: this block is the prompt's account of the
+        # reported path, so a step that reads as the wrong code is a step the
+        # LLM audits against the wrong evidence.
+        model = code_model_of(pr, getattr(self._analyzer, "_source_root", None))
+        bug_file = (getattr(getattr(pr, "metadata", None), "bug_file", "") or "")
         rows: list[dict] = []
         for i, ev in enumerate(events, 1):
             kind = (ev.get("event_kind") or "event")
@@ -413,10 +455,9 @@ class SimulationVerifier:
                 tag = " [BUG REPORTED HERE]"
             loc = f"L{ln} " if ln else ""
             snip = ""
-            try:
-                code = snippets.get(int(ln)) if ln else None
-            except (TypeError, ValueError):
-                code = None
+            code = _step_source_line(
+                ev.get("file_path"), ln, bug_file, snippets, model,
+            )
             if code:
                 snip = f"  `{' '.join(code.split())[:120]}`"
             rows.append({"step": i, "text": f"[{kind}]{tag} {loc}{desc}{snip}"})

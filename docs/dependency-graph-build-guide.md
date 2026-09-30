@@ -15,7 +15,7 @@
 
 | 产物 | 位置 | 由谁消费 | 内容 |
 |---|---|---|---|
-| **`pdg_<project>.json`** | 仓库根 | `load_sdg`（`run_path_selection.py:215`）→ 切片 / 分支提取 / 函数归因 | 每个函数的程序依赖图（节点带 `source_line`/`block_id`/`kind`，边有 `control_dep_edges`/`def_use_edges`） |
+| **`pdg_<project>.json`** | 仓库根 | `load_sdg`（`fp_analysis/pipeline/project_paths.py`）→ 切片 / 分支提取 / 函数归因 | 每个函数的程序依赖图（节点带 `source_line`/`block_id`/`kind`，边有 `control_dep_edges`/`def_use_edges`） |
 | **`cfg_cache/<project>/*.json`** | `cfg_cache/<project>/` | `CFGCacheSet`（`fp_analysis/cfg_cache_set.py`）→ 分段后按路径文件**按需加载并合并** | 每个**编译单元**的全 TU CFG（按 `md5(绝对源路径)` 命名） |
 | **工程配置** | `cfg_parser.py` 的 `_CFG_PROJECT_CONFIGS` | 运行时 `build_cfg_command` | 每个项目的 include / define / force_include |
 
@@ -108,7 +108,8 @@ src/llm_client/csa_analysis/pdg/build/pdg_builder \
 
 **验证三件事**：
 1. 文件生成、体积合理（对照：aria2 46MB/24019 fn、folly 21MB/10840 fn、faiss 53MB/13648 fn、protobuf 38MB/12796 fn）。
-2. 可用 `run_path_selection.load_sdg("pdg_faiss.json")` 载入，函数数非 0。
+2. 可用 `from llm_client.fp_analysis.pipeline.project_paths import load_sdg` 载入
+   `pdg_faiss.json`，函数数非 0（`run_path_selection.load_sdg` 是同一个函数的再导出）。
 3. **该批报告的 bug 宿主函数都在册**（判断有没有走 permissive fallback）：
    ```python
    import json; d=json.load(open("pdg_faiss.json"))
@@ -151,7 +152,7 @@ DU 边 27118 **与 v1.2 逐项相同**（截断纯文本层面，不参与切片
 |---|---|
 | `tools/build_project_deps.py` 构建前 | `check_builder`：二进制缺失、源码声明版本 ≠ `PDG_ARTIFACT_VERSION` → **拒绝构建**；二进制早于源码 → WARNING |
 | 同上，构建后 | `verify_pdg_version`：产物声明版本不符 → 报错并**删除该产物**（留着就是「一份错文件，日后被复用」） |
-| `run_path_selection._resolve_paths` | 分析任何报告前校验 `pdg_<proj>.json` 的声明版本，不符 → **直接报错退出**（不分析、不降级） |
+| `pipeline.project_paths._resolve_paths` | 分析任何报告前校验 `pdg_<proj>.json` 的声明版本，不符 → **直接报错退出**（不分析、不降级） |
 
 随时可查全仓库产物状态（无需指定项目）：
 
@@ -362,7 +363,11 @@ protobuf 实测：21 份报告 → **17 个种子 TU**，闭包再补 **4 个**�
   - 两个易错点：① `source_snippets` 的键是**段落局部行号**，一份报告每个文件一个段落，同一个键可能来自邻文件的段落
     —— 所以只能「窗口 + 只保留文本确实出现在该文件里的行」，整文件比较会读到莫名其妙的 85%；
     ② 证据太薄（可比行 < 3）时判为「无法判断」，**不因此拒绝**（薄证据不构成否定）。
-- **解析不到的种子只报告、绝不替换**（同 `run_path_selection._resolve_paths` 的 fail-fast 规则）。
+  - 这个过滤现在是**冗余的兜底**：管线交给下游的是 `loaded.code.snippet()`，即**该文件自己那一节**的
+    副本（`report_frontend` 的登记规则，见 `docs/report-frontend.md` §3），`parsed.source_snippets`
+    对 CSA 已不再是那份带跨节串行的窗口。实测该窗口在 211 份语料里有 1828 行、62 份报告是邻文件的行，
+    其中 25 份的 bug 行本身就是错的；两份不一致时管线按上面的 drift 记录报出，不裁决。
+- **解析不到的种子只报告、绝不替换**（同 `pipeline.project_paths._resolve_paths` 的 fail-fast 规则）。
   报告里出现本地找不到的文件时打 `GAP` 行，不猜、不指向同名的另一个文件。
 - **子模块版本以 `git ls-tree` 为准，不靠版本号猜。** protobuf 的 abseil/googletest 是子模块：
   `git ls-tree HEAD third_party/` 给出报告生成时的那两个 pin（abseil `8c6e53e`、googletest `5ec7f0c`）。

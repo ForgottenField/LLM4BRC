@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -144,6 +144,11 @@ class BugReportPath(BaseModel):
     bug_type: str = Field(default="")
     bug_description: str = Field(default="")
 
+    #: The report's code model, set by ``build_bug_report_path``.  It is what
+    #: :meth:`source_between` reads through, so the text it renders is the one
+    #: reader's text.  Excluded from dumps: a live object with caches, not data.
+    code_model: Any = Field(default=None, exclude=True, repr=False)
+
     def function_for_line(self, line: int) -> str:
         """Return the function name containing *line*."""
         for n in self.nodes:
@@ -184,19 +189,32 @@ class BugReportPath(BaseModel):
         source = next((n for n in self.nodes if n.event_number == event_from), None)
         line_from = source.line_number if source else fn_start
 
-        # Read the source file
+        # Read the source file — through the report's code model when it has
+        # one.  ``self.bug_file`` has already been placed by that model, so the
+        # resolve below is normally the ``direct`` rung confirming it; the
+        # ``project/`` rglob it replaces was a second, tree-guessing ladder that
+        # guessed a *name* (and is inert in this checkout — there is no
+        # ``./project`` — but wrong wherever there is one).
         bug_file = Path(self.bug_file)
-        if not bug_file.exists():
-            local = Path("project")
-            for f in local.rglob(bug_file.name):
-                bug_file = f
-                break
-
-        try:
-            all_lines = bug_file.read_text(
-                encoding="utf-8", errors="replace"
-            ).splitlines()
-        except OSError:
+        all_lines: list[str] = []
+        if self.code_model is not None:
+            hit = self.code_model.resolve(self.bug_file)
+            if hit.local is not None:
+                bug_file = hit.local
+            all_lines = self.code_model.lines(bug_file)
+        else:
+            if not bug_file.exists():
+                local = Path("project")
+                for f in local.rglob(bug_file.name):
+                    bug_file = f
+                    break
+            try:
+                all_lines = bug_file.read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()
+            except OSError:
+                pass
+        if not all_lines:
             return "(source not available)"
 
         # Determine end line: extend past line_to to capture continuation lines
