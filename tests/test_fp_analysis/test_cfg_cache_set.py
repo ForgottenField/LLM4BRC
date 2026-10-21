@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from llm_client.fp_analysis import cfg_cache_set as ccs
-from llm_client.fp_analysis.cfg_cache_set import CFGCacheSet, find_fn_key
+from fp_analysis import cfg_cache_set as ccs
+from fp_analysis.cfg_cache_set import CFGCacheSet, find_fn_key
 
 PROJECT = "faiss"
 

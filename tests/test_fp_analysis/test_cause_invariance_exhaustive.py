@@ -20,7 +20,7 @@ enumeration bound, and (c) the deliberately conservative corners.
 import random
 
 from llm_client.fp_analysis.combination_enum import iter_combinations
-from llm_client.fp_analysis.cause_invariance import (
+from fp_analysis.cause_invariance import (
     _iter_decisions,
     branch_writes_pointer,
     cause_invariant,
@@ -372,7 +372,7 @@ class _Parsed:
 
 
 def test_base_identifier_rejects_keywords():
-    from llm_client.fp_analysis.cause_invariance import _base_identifier
+    from fp_analysis.cause_invariance import _base_identifier
 
     assert _base_identifier("return idx;\n") is None
     assert _base_identifier("nullptr") is None
@@ -391,7 +391,7 @@ def test_leak_report_has_no_pointer_root_cause():
     invariant and would have generalized a decisive FP for a reason unrelated to the
     report (on a leak report the structural contradiction is about branch directions).
     """
-    from llm_client.fp_analysis.cause_invariance import extract_deref_pointer
+    from fp_analysis.cause_invariance import extract_deref_pointer
 
     sdg = _TrigSdg(_TrigNode("return idx;\n"))
     parsed = _Parsed(["Potential leak of memory pointed to by 'idx'"])
@@ -400,7 +400,7 @@ def test_leak_report_has_no_pointer_root_cause():
 
 
 def test_deref_report_still_yields_its_pointer():
-    from llm_client.fp_analysis.cause_invariance import extract_deref_pointer
+    from fp_analysis.cause_invariance import extract_deref_pointer
 
     sdg = _TrigSdg(_TrigNode("info->ai_addr"))
     parsed = _Parsed(["dereference of a null pointer (loaded from variable 'info')"])

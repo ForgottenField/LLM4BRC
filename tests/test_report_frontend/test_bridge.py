@@ -27,8 +27,8 @@ from llm_client.fp_analysis.report_bridge import (
     to_legacy,
     to_parsed_report,
 )
-from llm_client.report_frontend import ReportFrontend, ReportRef
-from llm_client.csa_analysis.models import EventKind
+from report_frontend import ReportFrontend, ReportRef
+from csa_analysis import EventKind
 
 
 @pytest.fixture

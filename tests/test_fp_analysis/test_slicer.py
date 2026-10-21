@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from llm_client.fp_analysis.pdg_models import (
+from fp_analysis.pdg_models import (
     ControlDepEdge,
     DefUseEdge,
     FunctionPDG,
@@ -12,7 +12,7 @@ from llm_client.fp_analysis.pdg_models import (
     PDGNode,
     SDG,
 )
-from llm_client.fp_analysis.slicer import (
+from fp_analysis.slicer import (
     SlicerConfig,
     compute_slice,
     compute_slice_from_seeds,
@@ -815,7 +815,7 @@ class TestBTBSSlicing:
 
     def test_find_call_site_exact_match(self, caller_callee_sdg):
         """_find_call_site_in_caller finds exact callee name match."""
-        from llm_client.fp_analysis.slicer import _find_call_site_in_caller
+        from fp_analysis.slicer import _find_call_site_in_caller
         site = _find_call_site_in_caller(caller_callee_sdg, "caller", "callee")
         assert site is not None
         nid, node = site
@@ -824,7 +824,7 @@ class TestBTBSSlicing:
 
     def test_find_call_site_not_found(self, caller_callee_sdg):
         """_find_call_site_in_caller returns None when no match."""
-        from llm_client.fp_analysis.slicer import _find_call_site_in_caller
+        from fp_analysis.slicer import _find_call_site_in_caller
         site = _find_call_site_in_caller(caller_callee_sdg, "caller", "nonexistent")
         assert site is None
 

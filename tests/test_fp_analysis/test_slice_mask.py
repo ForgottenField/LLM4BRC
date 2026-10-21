@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from llm_client.fp_analysis.slice_mask import SliceMask
+from fp_analysis.slice_mask import SliceMask
 
 
 class TestSliceMaskPruneWithAnchorState:

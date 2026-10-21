@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import pytest
-from llm_client.fp_analysis.cfg_branch_extractor import CFGBranchExtractor
+from fp_analysis.cfg_branch_extractor import CFGBranchExtractor
 from llm_client.fp_analysis.cfg_branch_models import (
     CFGBranchTree,
     Postcondition,
 )
-from llm_client.fp_analysis.cfg_models import CFGBlock, CFGFunction
-from llm_client.fp_analysis.pdg_models import ControlDepEdge, FunctionPDG, PDGNode
-from llm_client.fp_analysis.slice_mask import SliceMask
+from fp_analysis.cfg_models import CFGBlock, CFGFunction
+from fp_analysis.pdg_models import ControlDepEdge, FunctionPDG, PDGNode
+from fp_analysis.slice_mask import SliceMask
 
 
 # ─── Fixtures: mock CFG data ─────────────────────────────────────────────────
@@ -544,7 +544,7 @@ class TestCallGraphResolution:
     @pytest.fixture
     def cg_with_calls(self) -> object:
         """CallGraph with cross-file calls for disambiguation testing."""
-        from llm_client.csa_analysis.callgraph_models import CallGraph
+        from csa_analysis.callgraph_models import CallGraph
         return CallGraph.from_dict({
             "functions": {
                 "wslay_event_queue_msg_ex": {
@@ -580,7 +580,7 @@ class TestCallGraphResolution:
     @pytest.fixture
     def cfg_cache_two_callees(self) -> dict:
         """CFG cache with two wslay_queue_push entries (disambiguation target)."""
-        from llm_client.fp_analysis.cfg_models import CFGFunction, CFGBlock
+        from fp_analysis.cfg_models import CFGFunction, CFGBlock
         _empty: dict[str, CFGBlock] = {}
         return {
             "wslay_event_queue_msg_ex": CFGFunction(

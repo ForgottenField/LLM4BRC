@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from llm_client.fp_analysis.cfg_feasibility import extract_assumptions_from_events
-from llm_client.fp_analysis.cfg_models import AssumptionFact, AssumptionVerdict
+from fp_analysis.cfg_models import AssumptionFact
 from llm_client.fp_analysis.path_analyzer import FPAnalyzer
 
 
@@ -209,7 +209,7 @@ class TestCheckConstraintConflict:
 
     def test_no_conflict_when_no_assumptions_in_segment(self, mock_analyzer):
         """Segment with no extractable assumptions → no conflict."""
-        from llm_client.fp_analysis.cfg_models import SegmentInfo
+        from fp_analysis.cfg_models import SegmentInfo
 
         segment = SegmentInfo(
             segment_index=0, event_range=(1, 1), function_name="test_fn",
@@ -227,7 +227,7 @@ class TestCheckConstraintConflict:
 
     def test_conflict_detected_when_constraints_contradict(self, mock_analyzer):
         """blockLength_ <= 0 conflicts with blockLength_ > 0 → conflict found."""
-        from llm_client.fp_analysis.cfg_models import SegmentInfo
+        from fp_analysis.cfg_models import SegmentInfo
 
         segment = SegmentInfo(
             segment_index=1, event_range=(4, 5), function_name="test_fn",
@@ -254,7 +254,7 @@ class TestCheckConstraintConflict:
 
     def test_no_conflict_when_constraints_are_compatible(self, mock_analyzer):
         """blockLength_ > 100 is compatible with blockLength_ > 0 → no conflict."""
-        from llm_client.fp_analysis.cfg_models import SegmentInfo
+        from fp_analysis.cfg_models import SegmentInfo
 
         segment = SegmentInfo(
             segment_index=1, event_range=(4, 5), function_name="test_fn",

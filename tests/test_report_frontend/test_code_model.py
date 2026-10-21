@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from llm_client.report_frontend import code_model
-from llm_client.report_frontend.code_model import (
+from report_frontend import code_model
+from report_frontend.code_model import (
     STRATEGY_BASENAME,
     STRATEGY_BUILD_PREFIX,
     STRATEGY_DIRECT,
@@ -36,7 +36,7 @@ from llm_client.report_frontend.code_model import (
     SourceCodeModel,
     clear_index_cache,
 )
-from llm_client.report_frontend.models import (
+from report_frontend.models import (
     AnalyzerKind,
     BugFinding,
     SourceLocation,

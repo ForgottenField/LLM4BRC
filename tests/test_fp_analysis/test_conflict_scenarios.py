@@ -32,7 +32,6 @@ Segment  Lines   Function                                           Key branches
 from __future__ import annotations
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 from llm_client.fp_analysis.cfg_branch_models import (
     BranchTag,
@@ -40,13 +39,9 @@ from llm_client.fp_analysis.cfg_branch_models import (
     CFGBranchTree,
     Postcondition,
 )
-from llm_client.fp_analysis.conflict_checker import (
-    ConflictChecker,
+from fp_analysis.conflict_checker import (
     DirectVariableMatcher,
-    ReturnValueMapper,
 )
-from llm_client.fp_analysis.slice_mask import SliceMask
-from llm_client.fp_analysis.pdg_models import PDGNode, FunctionPDG
 from llm_client.fp_analysis.shortest_path import CalleePathCache, ShortestPathComputer
 
 
@@ -678,7 +673,7 @@ class TestConflictPatternLearning:
 
     def test_pattern_extraction_from_conflict(self):
         """Extract a HierarchicalConflictPattern from a merge failure."""
-        from llm_client.fp_analysis.conflict_learner import ConflictPatternLearner
+        from fp_analysis.conflict_learner import ConflictPatternLearner
 
         learner = ConflictPatternLearner(provider=None, model="test")
 
@@ -719,7 +714,7 @@ class TestConflictPatternLearning:
 
     def test_stuck_detection_same_patterns(self):
         """When all conflict patterns are repeats, is_stuck → True."""
-        from llm_client.fp_analysis.conflict_learner import ConflictPatternLearner
+        from fp_analysis.conflict_learner import ConflictPatternLearner
 
         learner = ConflictPatternLearner(provider=None, model="test")
 
@@ -733,7 +728,7 @@ class TestConflictPatternLearning:
 
     def test_not_stuck_with_has_new_hints(self):
         """Even with same patterns, new repair hints → not stuck."""
-        from llm_client.fp_analysis.conflict_learner import ConflictPatternLearner
+        from fp_analysis.conflict_learner import ConflictPatternLearner
 
         learner = ConflictPatternLearner(provider=None, model="test")
 
@@ -747,7 +742,7 @@ class TestConflictPatternLearning:
 
     def test_not_stuck_new_patterns(self):
         """New conflict patterns appear → not stuck."""
-        from llm_client.fp_analysis.conflict_learner import ConflictPatternLearner
+        from fp_analysis.conflict_learner import ConflictPatternLearner
 
         learner = ConflictPatternLearner(provider=None, model="test")
 
@@ -761,7 +756,7 @@ class TestConflictPatternLearning:
 
     def test_stuck_after_round_3_without_hints(self):
         """At round >= 3, _is_stuck returns True regardless."""
-        from llm_client.fp_analysis.conflict_learner import ConflictPatternLearner
+        from fp_analysis.conflict_learner import ConflictPatternLearner
 
         learner = ConflictPatternLearner(provider=None, model="test")
 

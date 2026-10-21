@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from llm_client.fp_analysis.pdg_models import (
+from fp_analysis.pdg_models import (
     ControlDepEdge,
     DefUseEdge,
     FunctionPDG,

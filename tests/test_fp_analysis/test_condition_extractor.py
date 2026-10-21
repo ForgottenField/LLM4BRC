@@ -15,8 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from llm_client.fp_analysis.condition_extractor import (
-    ExtractedCondition,
+from fp_analysis.condition_extractor import (
     extract_condition,
     extract_condition_from_text,
 )

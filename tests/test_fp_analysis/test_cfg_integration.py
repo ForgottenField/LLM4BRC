@@ -14,7 +14,7 @@ from llm_client.fp_analysis.cfg_branch_models import (
     CFGBranchTree,
     Postcondition,
 )
-from llm_client.fp_analysis.cfg_models import AnchorEvent, SegmentInfo
+from fp_analysis.cfg_models import AnchorEvent, SegmentInfo
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -235,9 +235,8 @@ class TestStep34Integration:
 
         The integration should not crash when no CFG data is available.
         """
-        import logging
         from llm_client.fp_analysis.cfg_branch_models import Postcondition
-        from llm_client.fp_analysis.cfg_models import SegmentInfo
+        from fp_analysis.cfg_models import SegmentInfo
 
         # Verify that even without cfg_cache, segment processing works
         seg = SegmentInfo(
@@ -272,7 +271,7 @@ class TestStep34Integration:
             CFGBranchTree,
             Postcondition,
         )
-        from llm_client.fp_analysis.slice_mask import SliceMask
+        from fp_analysis.slice_mask import SliceMask
 
         # Build a tree with a contradictory node
         pc = Postcondition("f", 10, "r >= 0", True)

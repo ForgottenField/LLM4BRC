@@ -136,7 +136,7 @@ class TestTheMonkeypatchSeamsAreWhereTheTestsSay:
     """
 
     def test_the_selector_seam_is_in_the_runner(self) -> None:
-        from llm_client.fp_analysis.pipeline import runner
+        from pipeline import runner
 
         source = (REPO_ROOT / "src/llm_client/fp_analysis/pipeline/runner.py").read_text()
         # The call sites, not the import: `_resolve_paths`/`parse_report` are
@@ -145,7 +145,8 @@ class TestTheMonkeypatchSeamsAreWhereTheTestsSay:
         assert hasattr(runner, "_resolve_paths") and hasattr(runner, "parse_report")
 
     def test_the_attempt_loop_seams_are_in_exploration(self) -> None:
-        from llm_client.fp_analysis.pipeline import exploration, runner
+        from pipeline import runner
+        from pipeline import exploration
 
         assert hasattr(exploration, "run_path_selection")
         assert hasattr(exploration, "_verify_path")

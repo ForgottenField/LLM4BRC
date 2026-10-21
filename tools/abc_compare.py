@@ -37,11 +37,11 @@ sys.path.insert(0, str(HERE / "src"))
 sys.path.insert(0, str(HERE))
 
 from run_path_selection import (  # noqa: E402
-    CFGCacheSet, _resolve_source_file_for_cfg, build_slice_mask,
+    CFGCacheSet, resolve_source_file_for_cfg, build_slice_mask,
     build_dense_path_annotations, load_sdg, parse_report, run_branch_filter,
 )
 from llm_client.fp_analysis.cfg_feasibility import segment_path  # noqa: E402
-from llm_client.fp_analysis.path_space import (  # noqa: E402
+from fp_analysis.path_space import (  # noqa: E402
     annotate_ci_groups, collect_path_space,
 )
 
@@ -73,7 +73,7 @@ def _run(label, report_path, sdg, source_root, annotations, want_dense):
     cache_set = CFGCacheSet(project_name=source_root.name,
                             source_root=str(source_root))
     parsed_report, bug_path, _ = parse_report(str(report_path), source_root)
-    bug_source = _resolve_source_file_for_cfg(parsed_report, str(source_root))
+    bug_source = resolve_source_file_for_cfg(parsed_report, str(source_root))
     cache_set.ensure(bug_source)
 
     segments = segment_path(parsed_report, sdg=sdg, source_root=str(source_root))

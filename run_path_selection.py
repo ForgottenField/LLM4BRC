@@ -69,38 +69,37 @@ HERE = _HERE
 # _resolve_source_file_for_cfg, build_dense_path_annotations): the tools got
 # those from this module's import block before the refactor, so they are kept
 # pointing at their real home rather than re-exported through the pipeline.
-from llm_client.fp_analysis.cfg_cache_set import CFGCacheSet  # noqa: F401
-from llm_client.fp_analysis.cfg_feasibility import _resolve_source_file_for_cfg  # noqa: F401
-from llm_client.fp_analysis.path_seed_extractor import build_dense_path_annotations  # noqa: F401
-from llm_client.report_frontend import ReportFrontend, ReportRef  # noqa: F401
-from llm_client.report_frontend.adapters.base import describe_adapters_table
+from fp_analysis.cfg_cache_set import CFGCacheSet  # noqa: F401
+from fp_analysis.cfg_feasibility import resolve_source_file_for_cfg  # noqa: F401
+from fp_analysis.path_seed_extractor import build_dense_path_annotations  # noqa: F401
+from report_frontend import ReportFrontend, ReportRef  # noqa: F401
+from report_frontend.adapters.base import describe_adapters_table
 
-from llm_client.fp_analysis.pipeline.artifacts import (  # noqa: F401
+from pipeline import (  # noqa: F401
     code_model_report,
     report_fields,
     report_key,
     report_out_path,
 )
-from llm_client.fp_analysis.pipeline.batch import (
-    _collect_reports,
-    _is_report_file,
+from pipeline import (
     run_batch,
+    collect_reports
 )
-from llm_client.fp_analysis.pipeline.layout import DEFAULT_PROJECTS_DIR  # noqa: F401
-from llm_client.fp_analysis.pipeline.project_paths import (  # noqa: F401
-    _check_pdg_artifact_version,
-    _infer_source_root,
-    _resolve_paths,
+from pipeline import DEFAULT_PROJECTS_DIR  # noqa: F401
+from pipeline import (  # noqa: F401
+    check_pdg_artifact_version,
+    infer_source_root,
+    resolve_paths,
     load_cfg_cache,
     load_sdg,
 )
-from llm_client.fp_analysis.pipeline.runner import process_report  # noqa: F401
-from llm_client.fp_analysis.pipeline.selection import (  # noqa: F401
+from pipeline import process_report  # noqa: F401
+from pipeline import (  # noqa: F401
     _NO_PATH_STEP_KEYWORD,
     _no_path_verdict,
 )
-from llm_client.fp_analysis.pipeline.stages import (  # noqa: F401
-    _infer_entry_function,
+from pipeline import (  # noqa: F401
+    infer_entry_function,
     build_slice_mask,
     parse_report,
     run_branch_filter,
@@ -189,7 +188,7 @@ def main():
         sys.exit(1)
     logger.info("DEEPSEEK_API_KEY: %s...", api_key[:8])
 
-    reports = _collect_reports(args)
+    reports = collect_reports(args)
     if args.max_reports:
         reports = reports[: args.max_reports]
     if not reports:
@@ -202,7 +201,7 @@ def main():
     # only after tens of minutes of unrelated work.
     for rp in reports:
         try:
-            _, _, pdg_path, source_root = _resolve_paths(args, rp)
+            _, _, pdg_path, source_root = resolve_paths(args, rp)
         except (ValueError, FileNotFoundError) as e:
             print(f"❌ {rp.key}: {e}", file=sys.stderr)
             sys.exit(2)

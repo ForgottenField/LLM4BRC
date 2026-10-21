@@ -24,7 +24,7 @@ sys.path.insert(0, str(HERE / "src"))
 sys.path.insert(0, str(HERE))
 
 from run_path_selection import (  # noqa: E402
-    CFGCacheSet, _resolve_source_file_for_cfg, build_slice_mask,
+    CFGCacheSet, resolve_source_file_for_cfg, build_slice_mask,
     load_sdg, parse_report, run_branch_filter,
 )
 from llm_client.fp_analysis.cfg_feasibility import segment_path  # noqa: E402
@@ -40,7 +40,7 @@ def replay(report_path: Path, sdg, cache_set) -> None:
     print(report_path.name)
     parsed_report, bug_path, _ = parse_report(str(report_path), SOURCE_ROOT)
 
-    bug_source = _resolve_source_file_for_cfg(parsed_report, str(SOURCE_ROOT))
+    bug_source = resolve_source_file_for_cfg(parsed_report, str(SOURCE_ROOT))
     hit = cache_set.ensure(bug_source)
     print(f"  bug file: {bug_source}  (cache: {'yes' if hit else 'NO'})")
 

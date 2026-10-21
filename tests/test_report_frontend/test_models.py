@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from llm_client.report_frontend.models import (
+from report_frontend.models import (
     FRONTEND_MODEL_VERSION,
     CONSTRAINT_STEP_KINDS,
     AnalyzerKind,

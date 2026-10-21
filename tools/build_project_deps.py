@@ -64,12 +64,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from llm_client.fp_analysis import cfg_feasibility as CF  # noqa: E402
-from llm_client.fp_analysis import cfg_parser as CP  # noqa: E402
+from fp_analysis import cfg_parser as CP
 from llm_client.fp_analysis.models import ParsedReport  # noqa: E402
 from llm_client.fp_analysis.pdg_loader import read_pdg_artifact_version  # noqa: E402
-from llm_client.fp_analysis.pdg_models import PDG_ARTIFACT_VERSION  # noqa: E402
+from fp_analysis.pdg_models import PDG_ARTIFACT_VERSION  # noqa: E402
 from llm_client.fp_analysis.report_bridge import to_parsed_report  # noqa: E402
-from llm_client.report_frontend import (  # noqa: E402
+from report_frontend import (  # noqa: E402
     ReportFrontend,
     ReportFrontendError,
     ReportRef,

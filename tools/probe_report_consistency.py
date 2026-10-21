@@ -33,11 +33,11 @@ sys.path.insert(0, str(HERE / "src"))
 sys.path.insert(0, str(HERE))
 
 from run_path_selection import (  # noqa: E402
-    CFGCacheSet, _check_pdg_artifact_version, _resolve_source_file_for_cfg,
+    CFGCacheSet, _check_pdg_artifact_version, resolve_source_file_for_cfg,
     build_slice_mask, load_sdg, parse_report, run_branch_filter,
 )
 from llm_client.fp_analysis.cfg_feasibility import segment_path  # noqa: E402
-from llm_client.fp_analysis.entry_state import (  # noqa: E402
+from fp_analysis.entry_state import (  # noqa: E402
     detect_fabricated_entry_state,
 )
 from llm_client.fp_analysis.models import code_model_of  # noqa: E402
@@ -74,7 +74,7 @@ def probe(report_path: Path, sdg, cache_set) -> None:
               f"  call_sites={entry.call_sites}")
         print(f"    reason: {entry.reason()}")
 
-    bug_source = _resolve_source_file_for_cfg(parsed_report, str(SOURCE_ROOT))
+    bug_source = resolve_source_file_for_cfg(parsed_report, str(SOURCE_ROOT))
     cache_set.ensure(bug_source)
 
     segments = segment_path(parsed_report, sdg=sdg, source_root=str(SOURCE_ROOT))

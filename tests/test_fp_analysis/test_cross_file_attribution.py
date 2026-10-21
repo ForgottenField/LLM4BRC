@@ -16,10 +16,10 @@ from llm_client.fp_analysis.cfg_feasibility import (
     build_bug_report_path,
     segment_path,
 )
-from llm_client.fp_analysis.cfg_models import NodeType
+from fp_analysis.cfg_models import NodeType
 from llm_client.fp_analysis.models import ParsedReport, ReportMetadata, code_model_of
-from llm_client.fp_analysis.pdg_models import FunctionPDG, PDGNode, SDG
-from llm_client.report_frontend.code_model import SourceCodeModel
+from fp_analysis.pdg_models import FunctionPDG, PDGNode, SDG
+from report_frontend.code_model import SourceCodeModel
 
 # Build-machine paths (as they appear in a report); resolved locally by
 # suffix-matching against the synthetic source root created by the fixture.

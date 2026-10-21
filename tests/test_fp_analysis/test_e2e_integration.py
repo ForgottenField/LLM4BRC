@@ -15,11 +15,11 @@ import tempfile
 
 import pytest
 
-from llm_client.fp_analysis.cfg_branch_extractor import CFGBranchExtractor
+from fp_analysis.cfg_branch_extractor import CFGBranchExtractor
 from llm_client.fp_analysis.cfg_branch_models import Postcondition
-from llm_client.fp_analysis.cfg_models import CFGBlock, CFGFunction
-from llm_client.fp_analysis.condition_extractor import extract_condition
-from llm_client.fp_analysis.slice_mask import SliceMask
+from fp_analysis.cfg_models import CFGBlock, CFGFunction
+from fp_analysis.condition_extractor import extract_condition
+from fp_analysis.slice_mask import SliceMask
 
 
 # ─── Mock helpers ──────────────────────────────────────────────────────────────
@@ -238,7 +238,7 @@ class TestFullBranchExtractionPipeline:
     @pytest.fixture
     def cg_for_test(self):
         """CallGraph resolving outer_fn → inner_fn."""
-        from llm_client.csa_analysis.callgraph_models import CallGraph
+        from csa_analysis.callgraph_models import CallGraph
         return CallGraph.from_dict({
             "functions": {
                 "outer_fn": {"file": "test.c", "line": 1},

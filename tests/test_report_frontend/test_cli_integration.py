@@ -30,10 +30,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import run_path_selection as rps  # noqa: E402
-from llm_client.fp_analysis.pipeline import runner as pipeline_runner  # noqa: E402
+from pipeline import runner as pipeline_runner
 
-from llm_client.report_frontend import ReportRef  # noqa: E402
-from llm_client.fp_analysis.pdg_models import FunctionPDG, PDGNode, SDG  # noqa: E402
+from report_frontend import ReportRef  # noqa: E402
+from fp_analysis.pdg_models import FunctionPDG, PDGNode, SDG  # noqa: E402
 
 
 @pytest.fixture
@@ -285,7 +285,7 @@ class TestPdgVersionGuard:
 
     def test_a_stale_artifact_is_refused(self, tmp_path: Path,
                                          sarif_path: Path) -> None:
-        from llm_client.fp_analysis.pdg_models import PDG_ARTIFACT_VERSION
+        from fp_analysis.pdg_models import PDG_ARTIFACT_VERSION
 
         with pytest.raises(ValueError) as exc:
             self._resolve(
@@ -298,7 +298,7 @@ class TestPdgVersionGuard:
 
     def test_the_current_version_passes(self, tmp_path: Path,
                                         sarif_path: Path) -> None:
-        from llm_client.fp_analysis.pdg_models import PDG_ARTIFACT_VERSION
+        from fp_analysis.pdg_models import PDG_ARTIFACT_VERSION
 
         ref, _, pdg_path, _ = self._resolve(
             tmp_path, sarif_path,
@@ -369,24 +369,24 @@ class TestEntryFunctionInference:
 
     def test_the_analyzers_own_answer_is_never_second_guessed(self, sdg: SDG) -> None:
         parsed = self._parsed("stated_by_report", "faiss/impl/index_read.cpp", 15)
-        assert rps._infer_entry_function(sdg, parsed) == "stated_by_report"
+        assert rps.infer_entry_function(sdg, parsed) == "stated_by_report"
 
     def test_the_tightest_containing_range_wins(self, sdg: SDG) -> None:
         parsed = self._parsed("", "faiss/impl/index_read.cpp", 15)
         # ``outer`` (10-40) and ``inner`` (12-20) both contain line 15; the
         # inner one is the function the line is actually in.
-        assert rps._infer_entry_function(sdg, parsed) == "inner"
+        assert rps.infer_entry_function(sdg, parsed) == "inner"
 
     def test_the_file_must_match(self, sdg: SDG) -> None:
         parsed = self._parsed("", "faiss/utils/other.cpp", 15)
-        assert rps._infer_entry_function(sdg, parsed) == "other_file"
+        assert rps.infer_entry_function(sdg, parsed) == "other_file"
 
     def test_no_containing_function_is_reported_empty(self, sdg: SDG) -> None:
         parsed = self._parsed("", "faiss/impl/index_read.cpp", 999)
-        assert rps._infer_entry_function(sdg, parsed) == ""
+        assert rps.infer_entry_function(sdg, parsed) == ""
 
     def test_no_location_is_reported_empty(self, sdg: SDG) -> None:
-        assert rps._infer_entry_function(sdg, self._parsed("", "", 0)) == ""
+        assert rps.infer_entry_function(sdg, self._parsed("", "", 0)) == ""
 
 
 class TestListingFlags:

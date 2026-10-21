@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from llm_client.csa_analysis.models import BugPath, EventKind, PathEvent
-from llm_client.fp_analysis.pdg_models import (
+from csa_analysis import BugPath, EventKind, PathEvent
+from fp_analysis.pdg_models import (
     ControlDepEdge,
     DefUseEdge,
     FunctionPDG,
@@ -14,7 +14,7 @@ from llm_client.fp_analysis.pdg_models import (
     PDGNode,
     SDG,
 )
-from llm_client.fp_analysis.path_seed_extractor import (
+from fp_analysis.path_seed_extractor import (
     build_caller_map,
     build_path_annotations,
     extract_seeds_from_bug_path,

@@ -11,16 +11,16 @@ from llm_client.fp_analysis.cfg_branch_models import (
     Postcondition,
     ReturnValueMap,
 )
-from llm_client.fp_analysis.pdg_models import PDGNode, FunctionPDG
-from llm_client.fp_analysis.conflict_checker import (
+from fp_analysis.pdg_models import PDGNode, FunctionPDG
+from fp_analysis.conflict_checker import (
     CFGReachabilityChecker,
     ConflictChecker,
     DirectVariableMatcher,
     IndirectVariableTracker,
     ReturnValueMapper,
 )
-from llm_client.fp_analysis.cfg_models import CFGBlock, CFGFunction, SegmentInfo
-from llm_client.fp_analysis.slice_mask import SliceMask
+from fp_analysis.cfg_models import CFGBlock, CFGFunction, SegmentInfo
+from fp_analysis.slice_mask import SliceMask
 
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────

@@ -32,9 +32,9 @@ from llm_client.fp_analysis.report_bridge import (
     to_bug_path,
     to_parsed_report,
 )
-from llm_client.report_frontend import ReportFrontend
-from llm_client.report_frontend.adapters.csa_html import CsaHtmlAdapter
-from llm_client.report_frontend.models import AnalyzerKind, ReportFormat, StepKind
+from report_frontend import ReportFrontend
+from report_frontend.adapters.csa_html import CsaHtmlAdapter
+from report_frontend.models import AnalyzerKind, ReportFormat, StepKind
 
 #: Captured from the legacy parser.  Every field of ``ReportMetadata``:
 LEGACY_METADATA = {

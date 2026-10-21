@@ -13,11 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from llm_client.report_frontend.errors import (
+from report_frontend.errors import (
     ReportFrontendError,
-    UnsupportedReportFormat,
+    UnsupportedReportFormat, registry,
 )
-from llm_client.report_frontend.registry import (
+from report_frontend.registry import (
     detect_adapter,
     finding_for,
     get_adapter,
@@ -25,7 +25,7 @@ from llm_client.report_frontend.registry import (
     rank_adapters,
     registered_adapters,
 )
-from llm_client.report_frontend.models import AnalyzerKind, ReportFormat
+from report_frontend.models import AnalyzerKind, ReportFormat
 
 
 class TestRegistry:
@@ -84,8 +84,6 @@ class TestAmbiguityIsLoud:
     """Two adapters claiming one document must never be resolved by import order."""
 
     def test_equal_scores_raise(self, tmp_path: Path, monkeypatch) -> None:
-        from llm_client.report_frontend import registry
-
         class Rival:
             name = "rival"
             format = ReportFormat.UNKNOWN
@@ -101,7 +99,7 @@ class TestAmbiguityIsLoud:
 
     def test_a_weaker_rival_does_not_block_detection(self, tmp_path: Path,
                                                      monkeypatch) -> None:
-        from llm_client.report_frontend import registry
+        from report_frontend import registry
 
         class Weaker:
             name = "weaker"
@@ -116,7 +114,7 @@ class TestAmbiguityIsLoud:
         assert detect_adapter(target).name == "csa-html"
 
     def test_ambiguity_message_names_both(self, tmp_path: Path, monkeypatch) -> None:
-        from llm_client.report_frontend import registry
+        from report_frontend import registry
 
         class Rival:
             name = "rival"
@@ -137,7 +135,7 @@ class TestAmbiguityIsLoud:
 
     def test_override_resolves_the_ambiguity(self, tmp_path: Path,
                                              monkeypatch) -> None:
-        from llm_client.report_frontend import registry
+        from report_frontend import registry
 
         class Rival:
             name = "rival"

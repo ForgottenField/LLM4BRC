@@ -17,13 +17,13 @@ from pathlib import Path
 
 import pytest
 
-from llm_client.report_frontend import (
+from report_frontend import (
     LoadedReport,
     ReportFrontend,
     ReportRef,
     load_report,
 )
-from llm_client.report_frontend.errors import ReportNotFoundError
+from report_frontend.errors import ReportNotFoundError
 
 
 class TestReportRefParsing:
@@ -181,7 +181,7 @@ class TestLoading:
     def test_a_selector_is_required_for_a_multi_finding_file(
         self, sarif_path: Path
     ) -> None:
-        from llm_client.report_frontend.errors import UnsupportedReportFormat
+        from report_frontend.errors import UnsupportedReportFormat
 
         with pytest.raises(UnsupportedReportFormat):
             ReportFrontend().load(sarif_path)
@@ -199,7 +199,7 @@ class TestLoading:
     def test_pinned_format_overrides_detection(self, tmp_path: Path) -> None:
         # No extension and nothing a sniffer recognises: only the pin can read
         # it, and that is the documented escape hatch.
-        from llm_client.report_frontend.errors import UnsupportedReportFormat
+        from report_frontend.errors import UnsupportedReportFormat
 
         path = tmp_path / "mystery"
         path.write_text("nothing here looks like a report\n")

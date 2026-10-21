@@ -17,7 +17,7 @@ class TestDataflowContext:
 
     def test_valid_when_no_reassignment(self):
         """DataflowContext.is_still_valid returns True when def sites unchanged."""
-        from llm_client.fp_analysis.conflict_models import DataflowContext
+        from fp_analysis.conflict_models import DataflowContext
 
         ctx = DataflowContext(
             var_def_sites={"r": ("callee", 572, "r = wslay_frame_recv(...)")},
@@ -34,7 +34,7 @@ class TestDataflowContext:
     def test_stale_after_reassignment(self):
         """DataflowContext.is_still_valid returns False when a variable was
         reassigned, changing the dataflow context."""
-        from llm_client.fp_analysis.conflict_models import DataflowContext
+        from fp_analysis.conflict_models import DataflowContext
 
         ctx = DataflowContext(
             var_def_sites={"r": ("callee", 572, "r = wslay_frame_recv(...)")},
@@ -50,7 +50,7 @@ class TestDataflowContext:
 
     def test_context_hash_changes_with_data(self):
         """context_hash changes when any field changes."""
-        from llm_client.fp_analysis.conflict_models import DataflowContext
+        from fp_analysis.conflict_models import DataflowContext
 
         ctx1 = DataflowContext(
             var_def_sites={"r": ("f", 10, "r = ...")},
@@ -62,7 +62,7 @@ class TestDataflowContext:
 
     def test_empty_context_valid(self):
         """Empty DataflowContext is always valid."""
-        from llm_client.fp_analysis.conflict_models import DataflowContext
+        from fp_analysis.conflict_models import DataflowContext
 
         ctx = DataflowContext()
         assert ctx.is_still_valid({}) is True
@@ -73,7 +73,7 @@ class TestConstraintConflict:
     """Tests for ConstraintConflict — deterministic constraint clash."""
 
     def test_range_contradiction_type(self):
-        from llm_client.fp_analysis.conflict_models import ConstraintConflict
+        from fp_analysis.conflict_models import ConstraintConflict
 
         cc = ConstraintConflict(
             variable="r",
@@ -89,7 +89,7 @@ class TestConstraintConflict:
         assert cc.segment_b == 5
 
     def test_null_check_type(self):
-        from llm_client.fp_analysis.conflict_models import ConstraintConflict
+        from fp_analysis.conflict_models import ConstraintConflict
 
         cc = ConstraintConflict(
             variable="ptr",
@@ -106,7 +106,7 @@ class TestHierarchicalConflictPattern:
     """Tests for the 8-layer HierarchicalConflictPattern."""
 
     def test_minimal_construction(self):
-        from llm_client.fp_analysis.conflict_models import (
+        from fp_analysis.conflict_models import (
             ConstraintConflict,
             HierarchicalConflictPattern,
             ConflictSemanticType,
@@ -134,7 +134,7 @@ class TestHierarchicalConflictPattern:
         assert len(pattern.violated_constraints) == 1
 
     def test_full_8_layer_construction(self):
-        from llm_client.fp_analysis.conflict_models import (
+        from fp_analysis.conflict_models import (
             ConstraintConflict,
             DataflowContext,
             HierarchicalConflictPattern,
@@ -206,7 +206,7 @@ class TestHierarchicalConflictPattern:
         assert pattern.pattern_signature == "null_check:ptr:seg1-seg3"
 
     def test_pattern_signature_different_for_different_conflicts(self):
-        from llm_client.fp_analysis.conflict_models import (
+        from fp_analysis.conflict_models import (
             ConstraintConflict,
             HierarchicalConflictPattern,
             ConflictSemanticType,
@@ -241,7 +241,7 @@ class TestRepairHint:
     """Tests for RepairHint — guides re-selection."""
 
     def test_change_branch_action(self):
-        from llm_client.fp_analysis.conflict_models import RepairHint
+        from fp_analysis.conflict_models import RepairHint
 
         hint = RepairHint(
             target_segment=3,
@@ -256,7 +256,7 @@ class TestRepairHint:
         assert hint.target_segment == 3
 
     def test_re_constrain_action(self):
-        from llm_client.fp_analysis.conflict_models import RepairHint
+        from fp_analysis.conflict_models import RepairHint
 
         hint = RepairHint(
             target_segment=2,
@@ -278,8 +278,7 @@ class TestConflictPatternLearner:
     def test_l1_l2_deterministic_extraction(self):
         """Layers 1-2 (Location + Constraint) are extracted deterministically
         from conflicting segment states."""
-        from llm_client.fp_analysis.conflict_models import ConstraintConflict
-        from llm_client.fp_analysis.conflict_learner import ConflictPatternLearner
+        from fp_analysis.conflict_learner import ConflictPatternLearner
 
         learner = ConflictPatternLearner(provider=None, model="test")
 
@@ -307,7 +306,7 @@ class TestConflictPatternLearner:
 
     def test_l1_l2_no_conflict_when_compatible(self):
         """L1-L2 extraction returns nothing when constraints are compatible."""
-        from llm_client.fp_analysis.conflict_learner import ConflictPatternLearner
+        from fp_analysis.conflict_learner import ConflictPatternLearner
 
         learner = ConflictPatternLearner(provider=None, model="test")
 
@@ -326,14 +325,14 @@ class TestConflictPatternLearner:
 
     def test_generate_avoidance_rules(self):
         """generate_avoidance_rules produces injectable prompt text."""
-        from llm_client.fp_analysis.conflict_models import (
+        from fp_analysis.conflict_models import (
             ConstraintConflict,
             DataflowContext,
             HierarchicalConflictPattern,
             RepairHint,
             ConflictSemanticType,
         )
-        from llm_client.fp_analysis.conflict_learner import ConflictPatternLearner
+        from fp_analysis.conflict_learner import ConflictPatternLearner
 
         learner = ConflictPatternLearner(provider=None, model="test")
 
@@ -372,13 +371,13 @@ class TestConflictPatternLearner:
 
     def test_generate_avoidance_rules_stale_context(self):
         """When dataflow context is stale, output includes warning marker."""
-        from llm_client.fp_analysis.conflict_models import (
+        from fp_analysis.conflict_models import (
             ConstraintConflict,
             DataflowContext,
             HierarchicalConflictPattern,
             ConflictSemanticType,
         )
-        from llm_client.fp_analysis.conflict_learner import ConflictPatternLearner
+        from fp_analysis.conflict_learner import ConflictPatternLearner
 
         learner = ConflictPatternLearner(provider=None, model="test")
 
@@ -414,7 +413,7 @@ class TestStuckDetection:
 
     def test_different_signatures_not_stuck(self):
         """Two rounds with different pattern signatures → not stuck."""
-        from llm_client.fp_analysis.conflict_learner import ConflictPatternLearner
+        from fp_analysis.conflict_learner import ConflictPatternLearner
 
         learner = ConflictPatternLearner(provider=None, model="test")
 
@@ -424,7 +423,7 @@ class TestStuckDetection:
 
     def test_same_signatures_is_stuck(self):
         """Two rounds with identical pattern signatures and no new hints → stuck."""
-        from llm_client.fp_analysis.conflict_learner import ConflictPatternLearner
+        from fp_analysis.conflict_learner import ConflictPatternLearner
 
         learner = ConflictPatternLearner(provider=None, model="test")
 
@@ -434,7 +433,7 @@ class TestStuckDetection:
 
     def test_same_signatures_not_stuck_if_new_hints(self):
         """Same signatures but new repair hints available → not stuck."""
-        from llm_client.fp_analysis.conflict_learner import ConflictPatternLearner
+        from fp_analysis.conflict_learner import ConflictPatternLearner
 
         learner = ConflictPatternLearner(provider=None, model="test")
 
@@ -443,7 +442,7 @@ class TestStuckDetection:
 
     def test_round_limit_exceeded(self):
         """Round >= 3 should be considered stuck regardless."""
-        from llm_client.fp_analysis.conflict_learner import ConflictPatternLearner
+        from fp_analysis.conflict_learner import ConflictPatternLearner
 
         learner = ConflictPatternLearner(provider=None, model="test")
 

@@ -42,7 +42,7 @@ class TestReSelectionLoop:
 
     def test_stuck_detection_early_exit(self):
         """When same conflict pattern repeats with no new hints, exit early."""
-        from llm_client.fp_analysis.conflict_learner import ConflictPatternLearner
+        from fp_analysis.conflict_learner import ConflictPatternLearner
 
         learner = ConflictPatternLearner()
         prev_sigs = {"range:r:seg0-seg5", "null:ptr:seg2-seg3"}
@@ -53,7 +53,7 @@ class TestReSelectionLoop:
 
     def test_round3_always_returns(self):
         """Round 3 always returns regardless of signatures."""
-        from llm_client.fp_analysis.conflict_learner import ConflictPatternLearner
+        from fp_analysis.conflict_learner import ConflictPatternLearner
 
         learner = ConflictPatternLearner()
 
@@ -67,7 +67,7 @@ class TestPromptTemplates:
 
     def test_path_candidate_selection_system_prompt_exists(self):
         """PATH_CANDIDATE_SELECTION_SYSTEM_PROMPT is a non-empty string."""
-        from llm_client.fp_analysis.prompt_templates import (
+        from fp_analysis.prompt_templates import (
             PATH_CANDIDATE_SELECTION_SYSTEM_PROMPT,
         )
         assert isinstance(PATH_CANDIDATE_SELECTION_SYSTEM_PROMPT, str)
@@ -76,7 +76,7 @@ class TestPromptTemplates:
 
     def test_conflict_learning_system_prompt_exists(self):
         """CONFLICT_LEARNING_SYSTEM_PROMPT is a non-empty string."""
-        from llm_client.fp_analysis.prompt_templates import (
+        from fp_analysis.prompt_templates import (
             CONFLICT_LEARNING_SYSTEM_PROMPT,
         )
         assert isinstance(CONFLICT_LEARNING_SYSTEM_PROMPT, str)
@@ -85,7 +85,7 @@ class TestPromptTemplates:
 
     def test_reselect_prompt_template_exists(self):
         """SEGMENT_RESELECT_PROMPT is a non-empty template string."""
-        from llm_client.fp_analysis.prompt_templates import (
+        from fp_analysis.prompt_templates import (
             SEGMENT_RESELECT_PROMPT,
         )
         assert isinstance(SEGMENT_RESELECT_PROMPT, str)
@@ -95,7 +95,7 @@ class TestPromptTemplates:
 
     def test_path_candidate_selection_prompt_template(self):
         """PATH_CANDIDATE_SELECTION_PROMPT has required placeholders."""
-        from llm_client.fp_analysis.prompt_templates import (
+        from fp_analysis.prompt_templates import (
             PATH_CANDIDATE_SELECTION_PROMPT,
         )
         assert "{candidates}" in PATH_CANDIDATE_SELECTION_PROMPT
@@ -112,7 +112,7 @@ class TestShortestPathIntegration:
         from llm_client.fp_analysis.cfg_branch_models import (
             BranchTag, CFGBranchNode, CFGBranchTree, Postcondition,
         )
-        from llm_client.fp_analysis.pdg_models import SDG
+        from fp_analysis.pdg_models import SDG
 
         # Simulate a segment with:
         # - Branch 1: consistent (auto-confirmed)
@@ -166,8 +166,8 @@ class TestShortestPathIntegration:
     def test_callee_cache_integration(self):
         """CalleePathCache integrates with SDG for real callee lookup."""
         from llm_client.fp_analysis.shortest_path import CalleePathCache
-        from llm_client.fp_analysis.pdg_models import (
-            ControlDepEdge, DefUseEdge, FunctionPDG, PDGNode, SDG,
+        from fp_analysis.pdg_models import (
+            DefUseEdge, FunctionPDG, PDGNode, SDG,
         )
 
         nodes = [

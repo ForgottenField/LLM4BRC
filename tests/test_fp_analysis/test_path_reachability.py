@@ -17,20 +17,20 @@ from __future__ import annotations
 
 import pytest
 
-from llm_client.fp_analysis.cfg_branch_extractor import CFGBranchExtractor
-from llm_client.fp_analysis.cfg_models import CFGBlock, CFGFunction
-from llm_client.fp_analysis.path_space import (
+from fp_analysis.cfg_branch_extractor import CFGBranchExtractor
+from fp_analysis.cfg_models import CFGBlock, CFGFunction
+from fp_analysis.path_space import (
     _MAX_SERIALIZED_DECISIONS,
     _normalize_call_edge,
     _segment_signature,
     ci_branch_set_of,
 )
-from llm_client.fp_analysis.pdg_models import (
+from fp_analysis.pdg_models import (
     ControlDepEdge,
     FunctionPDG,
     PDGNode,
 )
-from llm_client.fp_analysis.slice_mask import SliceMask
+from fp_analysis.slice_mask import SliceMask
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────

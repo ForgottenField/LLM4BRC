@@ -14,13 +14,13 @@ from pathlib import Path
 
 import pytest
 
-from llm_client.report_frontend.models import (
+from report_frontend.models import (
     AnalyzerKind,
     ReportFormat,
     Severity,
     StepKind,
 )
-from llm_client.report_frontend.registry import load_document
+from report_frontend.registry import load_document
 
 
 @pytest.fixture
@@ -215,17 +215,17 @@ class TestCodeFlow:
 
 class TestMalformedInput:
     def test_not_json(self, tmp_path: Path) -> None:
-        from llm_client.report_frontend.errors import ReportParseError
+        from report_frontend.errors import ReportParseError
 
         path = tmp_path / "broken.sarif"
-        from llm_client.report_frontend.registry import get_adapter
+        from report_frontend.registry import get_adapter
         path.write_text("{not json")
         with pytest.raises(ReportParseError):
             get_adapter("sarif").load(path, path.read_text())
 
     def test_json_without_runs(self, tmp_path: Path) -> None:
-        from llm_client.report_frontend.errors import ReportParseError
-        from llm_client.report_frontend.registry import get_adapter
+        from report_frontend.errors import ReportParseError
+        from report_frontend.registry import get_adapter
 
         path = tmp_path / "other.json"
         path.write_text('{"findings": []}')
@@ -249,7 +249,7 @@ class TestNoSourceFile:
     """
 
     def test_the_bare_root_is_no_file(self) -> None:
-        from llm_client.report_frontend.adapters.sarif import (
+        from report_frontend.adapters.sarif import (
             _location_from,
             _uri_to_path,
         )
@@ -262,7 +262,7 @@ class TestNoSourceFile:
         assert loc.file == "" and loc.line == 0
 
     def test_a_real_root_level_file_survives(self) -> None:
-        from llm_client.report_frontend.adapters.sarif import _uri_to_path
+        from report_frontend.adapters.sarif import _uri_to_path
 
         assert _uri_to_path("file:///build/faiss/clone_index.cpp") == (
             "/build/faiss/clone_index.cpp"
@@ -274,7 +274,7 @@ class TestNoSourceFile:
         # (A system header is outside the source root, so the *pipeline* is
         # what must decline to expand into it; see rule C in
         # `cfg_branch_extractor`.)  Only the bare root is empty.
-        from llm_client.report_frontend.adapters.sarif import _uri_to_path
+        from report_frontend.adapters.sarif import _uri_to_path
 
         assert _uri_to_path("file:///usr/include/c++/9/bits/shared_ptr.h") == (
             "/usr/include/c++/9/bits/shared_ptr.h"

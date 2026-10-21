@@ -46,13 +46,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import run_path_selection as rps  # noqa: E402
-from llm_client.fp_analysis.cfg_models import SegmentInfo  # noqa: E402
+from fp_analysis.cfg_models import SegmentInfo  # noqa: E402
 from llm_client.fp_analysis.models import ParsedReport, ReportMetadata  # noqa: E402
-from llm_client.fp_analysis.pdg_models import SDG  # noqa: E402
-from llm_client.fp_analysis.pipeline import exploration as pipeline_exploration  # noqa: E402
-from llm_client.fp_analysis.pipeline import runner as pipeline_runner  # noqa: E402
-from llm_client.report_frontend import ReportRef  # noqa: E402
+from fp_analysis.pdg_models import SDG  # noqa: E402
+from pipeline import exploration as pipeline_exploration  # noqa: E402
+from pipeline import runner as pipeline_runner
+from report_frontend import ReportRef  # noqa: E402
 
 
 # ─── doubles ─────────────────────────────────────────────────────────────────────

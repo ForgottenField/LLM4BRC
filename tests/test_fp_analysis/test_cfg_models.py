@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from llm_client.fp_analysis.cfg_models import (
+from fp_analysis.cfg_models import (
     AnchorEvent,
     AssumptionFact,
     AssumptionVerdict,
-    BugReportPath,
-    NodeType,
-    PathNode,
     SegmentInfo,
 )
 

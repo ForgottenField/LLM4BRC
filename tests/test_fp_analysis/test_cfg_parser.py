@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from llm_client.fp_analysis.cfg_models import (
+from fp_analysis.cfg_models import (
     BranchDecision,
     CFGBlock,
     CFGFunction,
     CFGPathVariant,
 )
-from llm_client.fp_analysis.cfg_parser import (
+from fp_analysis.cfg_parser import (
     enumerate_paths,
     parse_cfg_text,
 )

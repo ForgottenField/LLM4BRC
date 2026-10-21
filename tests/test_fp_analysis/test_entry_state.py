@@ -30,8 +30,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from llm_client.fp_analysis import entry_state as es
-from llm_client.report_frontend.code_model import (
+from fp_analysis import entry_state as es
+from report_frontend.code_model import (
     STRATEGY_DIRECT,
     ResolvedFile,
     SourceCodeModel,

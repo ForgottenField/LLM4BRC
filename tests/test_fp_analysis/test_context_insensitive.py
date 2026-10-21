@@ -12,7 +12,7 @@ and flips a genuine TP (e.g. GlogFormatter's infinite-loop bug) to FP.
 These tests are pure / no LLM.
 """
 
-from llm_client.fp_analysis.path_space import (
+from fp_analysis.path_space import (
     annotate_ci_groups,
     ci_branch_set_of,
     _normalize_call_edge,

@@ -25,8 +25,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from llm_client.fp_analysis.cfg_branch_extractor import CFGBranchExtractor
-from llm_client.fp_analysis.pdg_models import ControlDepEdge, FunctionPDG, PDGNode
+from fp_analysis.cfg_branch_extractor import CFGBranchExtractor
+from fp_analysis.pdg_models import ControlDepEdge, FunctionPDG, PDGNode
 
 FILE_A = "/proj/IndexPQ.cpp"
 FILE_B = "/proj/io.cpp"
