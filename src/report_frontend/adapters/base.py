@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..models import AnalyzerKind, ReportFormat
+from ..report_model import AnalyzerKind, ReportFormat
 from ..registry import ReportAdapter, registered_adapters
 
 

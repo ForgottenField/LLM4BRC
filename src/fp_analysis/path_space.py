@@ -66,7 +66,7 @@ def _chosen_by_seg(selections) -> dict[int, set[str]]:
 def _segment_signature(branch_decisions) -> str:
     """Per-segment branch signature, e.g. ``seg0[L10:T,L12:F]``.
 
-    Mirrors the whole-path ``path_signature`` in ``run_path_selection.py`` but
+    Mirrors the whole-path ``path_signature`` in ``run_pipeline.py`` but
     scoped to one segment so it can serve as a stable candidate key.
     """
     parts = []

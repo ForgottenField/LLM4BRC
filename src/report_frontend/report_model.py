@@ -48,24 +48,24 @@ FRONTEND_MODEL_VERSION = "1.0"
 # ---------------------------------------------------------------------------
 # Enumerations
 # ---------------------------------------------------------------------------
-
-
 class AnalyzerKind(str, Enum):
     """Which static analyzer produced a report."""
 
     CSA = "csa"
-    CODEQL = "codeql"
-    INFER = "infer"
     CPPCHECK = "cppcheck"
+    INFER = "infer"
+    CODEQL = "codeql"
+    JOERN = "joern"
     UNKNOWN = "unknown"
 
     @classmethod
-    def coerce(cls, value: "str | AnalyzerKind | None") -> "AnalyzerKind":
+    def coerce(cls, value: str | AnalyzerKind | None) -> AnalyzerKind:
         if isinstance(value, cls):
             return value
         if value is None:
             return cls.UNKNOWN
         try:
+            # if input value is "Csa", "CSA", or "  csa  ", convert it to "csa"
             return cls(str(value).strip().lower())
         except ValueError:
             return cls.UNKNOWN
@@ -75,7 +75,7 @@ class ReportFormat(str, Enum):
     """On-disk shape of the report document (the *container*, not the tool)."""
 
     CSA_HTML = "csa-html"
-    SARIF = "sarif"
+    CODEQL_SARIF = "codeql_sarif"
     INFER_JSON = "infer-json"
     CPPCHECK_XML = "cppcheck-xml"
     UNKNOWN = "unknown"
@@ -90,37 +90,37 @@ class Severity(str, Enum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def coerce(cls, value: "str | Severity | None") -> "Severity":
+    def coerce(cls, value: str | Severity | None) -> Severity:
         """Map an analyzer's own vocabulary onto the four levels.
 
         CSA's categories, SARIF's ``level`` (``error``/``warning``/``note``/
         ``none``), CodeQL's ``problem.severity`` and Infer's ``bug_type``
-        qualifiers all land here.  Anything unrecognised becomes ``UNKNOWN``
-        rather than ``ERROR``: a wrong "this is serious" changes no verdict
-        today, but defaulting upward invites a future stage to trust it.
+        qualifiers all land here.  Anything unrecognised becomes ``UNKNOWN``.
         """
         if isinstance(value, Severity):
             return value
         if value is None:
             return cls.UNKNOWN
-        token = str(value).strip().lower()
-        if token in ("error", "high", "critical", "severe", "fatal"):
+
+        severity = str(value).strip().lower()
+        if severity in ("error", "high", "critical", "severe", "fatal"):
             return cls.ERROR
-        if token in ("warning", "medium", "moderate"):
+        if severity in ("warning", "medium", "moderate"):
             return cls.WARNING
-        if token in ("note", "info", "low", "none", "remark"):
+        if severity in ("note", "info", "low", "none", "remark"):
             return cls.NOTE
+
         # CSA emits free-text categories ("Memory error", "Logic error",
         # "Security", "Dead store"); "error" as a substring is the only signal
         # they carry.  Order matters: check "error" before nothing matches.
-        if "error" in token:
+        if "error" in severity:
             return cls.ERROR
-        if "warning" in token:
+        if "warning" in severity:
             return cls.WARNING
         return cls.UNKNOWN
 
 
-class StepKind(str, Enum):
+class ReportStepKind(str, Enum):
     """What one step of a reported path *is*.
 
     The vocabulary is the union of what the analyzers express, deliberately
@@ -143,13 +143,13 @@ class StepKind(str, Enum):
     @property
     def is_boundary(self) -> bool:
         """True for the kinds that segment a path (see ``cfg_feasibility``)."""
-        return self in (StepKind.CONTROL, StepKind.CALL, StepKind.REPORT)
+        return self in (ReportStepKind.CONTROL, ReportStepKind.CALL, ReportStepKind.RETURN, ReportStepKind.REPORT)
 
 
 #: Step kinds that assert a constraint the report relies on.  CSA's path
 #: wording for these is ``Assuming …``; stages 4 and 6b scan exactly this set.
-CONSTRAINT_STEP_KINDS: frozenset[StepKind] = frozenset(
-    {StepKind.ASSUME, StepKind.CONTROL}
+CONSTRAINT_STEP_KINDS: frozenset[ReportStepKind] = frozenset(
+    {ReportStepKind.ASSUME, ReportStepKind.CONTROL}
 )
 
 
@@ -161,17 +161,8 @@ class PathEvidence(str, Enum):
     analyzers state it differently:
 
     * CSA walks a symbolic path and prints every step of it;
-    * a CodeQL query may report only *where*, with no ``codeFlow`` at all
-      (72% of the real corpus: 127 of 176 findings), which is a location and a
+    * a CodeQL query may report only *where*, with no ``codeFlow`` at all, which is a location and a
       claim, not a path.
-
-    **Why it is recorded rather than inferred.**  A location-only finding still
-    renders as one step (the report step), so every stage below can read it as
-    "a path of length 1" and reason about a path that does not exist: there is
-    no branch it took, no assumption it made, nothing for a step-by-step
-    conformance audit to check.  The count cannot distinguish "the analyzer
-    reported a one-step path" from "the analyzer reported no path", and the
-    stages that care need the difference.
 
     The **adapter** sets it, and the adapter is allowed to look at the whole
     document while doing so (that is where the analyzer's statement lives).
@@ -182,25 +173,23 @@ class PathEvidence(str, Enum):
 
     TRACE = "trace"              # the analyzer supplied a step trace
     LOCATION_ONLY = "location"   # only the flagged location and the claim
+    UNKNOWN = "unknown"
 
     @classmethod
-    def coerce(cls, value: "str | PathEvidence | None") -> "PathEvidence":
+    def coerce(cls, value: str | PathEvidence | None) -> PathEvidence:
         if isinstance(value, cls):
             return value
         if value is None:
-            # Conservative: a document that does not say gets the weaker
-            # reading, so a stage that needs a path cannot be handed one.
-            return cls.LOCATION_ONLY
+            return cls.UNKNOWN
         try:
             return cls(str(value).strip().lower())
         except ValueError:
-            return cls.LOCATION_ONLY
+            return cls.UNKNOWN
 
 
 # ---------------------------------------------------------------------------
 # Locations
 # ---------------------------------------------------------------------------
-
 
 @dataclass(frozen=True)
 class SourceLocation:
@@ -223,7 +212,7 @@ class SourceLocation:
     def is_valid(self) -> bool:
         return bool(self.file) and self.line > 0
 
-    def at_line(self, line: int) -> "SourceLocation":
+    def at_line(self, line: int) -> SourceLocation:
         return SourceLocation(
             file=self.file, line=line, column=0,
             end_line=line, end_column=0,
@@ -248,7 +237,7 @@ class SourceLocation:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SourceLocation":
+    def from_dict(cls, data: dict[str, Any]) -> SourceLocation:
         return cls(
             file=str(data.get("file", "")),
             line=int(data.get("line", 0) or 0),
@@ -259,9 +248,8 @@ class SourceLocation:
 
 
 # ---------------------------------------------------------------------------
-# Path steps
+# CSA Report Path steps
 # ---------------------------------------------------------------------------
-
 
 @dataclass
 class TraceStep:
@@ -276,22 +264,15 @@ class TraceStep:
     """
 
     index: int = 0
-    kind: StepKind = StepKind.EVENT
+    kind: ReportStepKind = ReportStepKind.EVENT
     location: SourceLocation = field(default_factory=SourceLocation)
     message: str = ""
     function: str = ""
-    #: For CONTROL: the predicate text when the analyzer reports it (CSA does
-    #: not — its control events name only the direction, and the condition is
-    #: recovered from the CFG by stage 6a).
     condition: str = ""
-    #: For CONTROL: True = the branch was taken, False = not taken, None = the
-    #: analyzer recorded a branch decision without a direction (CSA's
-    #: "← Loop condition is false. Exiting loop →").
+    #: For CONTROL: True = the branch was taken, False = not taken, None = the analyzer recorded a branch decision without a direction.
     direction: Optional[bool] = None
-    #: For ASSUME: the constraint text up to the analyzer's arrow, e.g.
-    #: ``"'ret' is equal to 1"``.
+    #: For ASSUME: the constraint text up to the analyzer's arrow, e.g. ``"'ret' is equal to 1"``.
     assumption: str = ""
-    #: For CALL: the callee name as written in the report.
     callee: str = ""
     #: Analyzer-specific extras, preserved so an adapter's information is never
     #: silently dropped (e.g. a SARIF threadFlow location's nesting level).
@@ -306,16 +287,16 @@ class TraceStep:
         return self.location.line
 
     @property
-    def is_error_start(self) -> bool:
-        return self.kind is StepKind.ERROR_START
+    def is_error_start_step(self) -> bool:
+        return self.kind is ReportStepKind.ERROR_START
 
     @property
-    def is_call(self) -> bool:
-        return self.kind is StepKind.CALL
+    def is_call_step(self) -> bool:
+        return self.kind is ReportStepKind.CALL
 
     @property
-    def is_control(self) -> bool:
-        return self.kind is StepKind.CONTROL
+    def is_control_step(self) -> bool:
+        return self.kind is ReportStepKind.CONTROL
 
     @property
     def is_constraint(self) -> bool:
@@ -323,12 +304,6 @@ class TraceStep:
         return self.kind in CONSTRAINT_STEP_KINDS
 
     def to_dict(self) -> dict[str, Any]:
-        # ``raw`` is serialised, not dropped: it is where an adapter keeps the
-        # analyzer's own spelling of things this model normalises — CSA's path
-        # number and its loop/ternary branch value, both of which
-        # ``report_bridge`` renders back into the pipeline's legacy dicts.  A
-        # round trip that lost it would produce a report that re-parses into a
-        # different path.
         return {
             "index": self.index,
             "kind": self.kind.value,
@@ -346,7 +321,7 @@ class TraceStep:
     def from_dict(cls, data: dict[str, Any]) -> "TraceStep":
         return cls(
             index=int(data.get("index", 0) or 0),
-            kind=StepKind(data.get("kind", "event")),
+            kind=ReportStepKind(data.get("kind", "event")),
             location=SourceLocation.from_dict(data.get("location", {}) or {}),
             message=str(data.get("message", "")),
             function=str(data.get("function", "")),
@@ -359,9 +334,8 @@ class TraceStep:
 
 
 # ---------------------------------------------------------------------------
-# The finding
+# Bug finding related Info
 # ---------------------------------------------------------------------------
-
 
 @dataclass
 class BugFinding:
@@ -401,12 +375,6 @@ class BugFinding:
     #: What the analyzer said about the path — see :class:`PathEvidence`.  The
     #: adapters set it; nothing downstream may infer it from ``len(steps)``.
     path_evidence: PathEvidence = PathEvidence.LOCATION_ONLY
-    #: The count the *analyzer* reported (CSA's ``BUGPATHLENGTH``), 0 when it
-    #: reports none.  Kept beside ``len(steps)`` rather than replaced by it
-    #: because the two genuinely differ — CSA counts the steps it walked, some
-    #: of which it does not render — and the pipeline has always used the
-    #: analyzer's number for ``ReportMetadata.path_length``.  Consumers that
-    #: want "how much path do I have" use ``path_length``.
     reported_path_length: int = 0
     #: Secondary locations the analyzer attached ("This catch block", …).
     related: list[SourceLocation] = field(default_factory=list)
@@ -421,7 +389,6 @@ class BugFinding:
 
     @property
     def path_length(self) -> int:
-        """Number of path steps this model holds (counting the report step)."""
         return len(self.steps)
 
     @property
@@ -436,24 +403,24 @@ class BugFinding:
         return self.path_evidence is PathEvidence.TRACE
 
     @property
-    def error_start(self) -> Optional[TraceStep]:
+    def error_start(self) -> Optional[ReportStepKind]:
         """The step where the flagged value/state originates, if reported."""
         for step in self.steps:
-            if step.kind is StepKind.ERROR_START:
+            if step.kind is ReportStepKind.ERROR_START:
                 return step
         return None
 
     @property
     def calls(self) -> list[TraceStep]:
         """Every ``Calling …`` step, in path order."""
-        return [s for s in self.steps if s.kind is StepKind.CALL]
+        return [s for s in self.steps if s.kind is TraceStep.CALL]
 
     @property
     def call_chain(self) -> list[str]:
         """Callee names in call order (``error_start``-independent)."""
         return [s.callee for s in self.calls if s.callee]
 
-    def steps_of(self, *kinds: StepKind) -> list[TraceStep]:
+    def steps_of(self, *kinds: ReportStepKind) -> list[ReportStepKind]:
         wanted = set(kinds)
         return [s for s in self.steps if s.kind in wanted]
 
@@ -489,7 +456,7 @@ class BugFinding:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "BugFinding":
+    def from_dict(cls, data: dict[str, Any]) -> BugFinding:
         return cls(
             finding_id=str(data.get("finding_id", "")),
             analyzer=AnalyzerKind.coerce(data.get("analyzer")),
@@ -514,9 +481,8 @@ class BugFinding:
 # The document
 # ---------------------------------------------------------------------------
 
-
 @dataclass
-class ReportDocument:
+class ReportModel:
     """A parsed report *file* — the container of one or more findings.
 
     A CSA HTML file holds exactly one finding; a SARIF file holds every result
@@ -588,7 +554,7 @@ class ReportDocument:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ReportDocument":
+    def from_dict(cls, data: dict[str, Any]) -> ReportModel:
         return cls(
             path=Path(data.get("path", "")),
             format=ReportFormat(data.get("format", "unknown")),
@@ -598,17 +564,3 @@ class ReportDocument:
             tool_version=str(data.get("tool_version", "")),
             metadata=dict(data.get("metadata", {}) or {}),
         )
-
-
-__all__ = [
-    "FRONTEND_MODEL_VERSION",
-    "AnalyzerKind",
-    "BugFinding",
-    "CONSTRAINT_STEP_KINDS",
-    "ReportDocument",
-    "ReportFormat",
-    "Severity",
-    "SourceLocation",
-    "StepKind",
-    "TraceStep",
-]

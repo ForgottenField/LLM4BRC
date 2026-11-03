@@ -29,7 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import run_path_selection as rps  # noqa: E402
+import run_pipeline as rps  # noqa: E402
 from pipeline import runner as pipeline_runner
 
 from report_frontend import ReportRef  # noqa: E402
@@ -393,7 +393,7 @@ class TestListingFlags:
     """``--list-formats`` / ``--list-findings`` run without an API key."""
 
     def test_list_formats(self, capsys, monkeypatch) -> None:
-        monkeypatch.setattr(sys, "argv", ["run_path_selection.py", "--list-formats"])
+        monkeypatch.setattr(sys, "argv", ["run_pipeline.py", "--list-formats"])
         with pytest.raises(SystemExit) as exc:
             rps.main()
         assert exc.value.code == 0
@@ -402,7 +402,7 @@ class TestListingFlags:
 
     def test_list_findings(self, capsys, monkeypatch, sarif_path: Path) -> None:
         monkeypatch.setattr(sys, "argv", [
-            "run_path_selection.py", "--list-findings", "--report", str(sarif_path),
+            "run_pipeline.py", "--list-findings", "--report", str(sarif_path),
         ])
         with pytest.raises(SystemExit) as exc:
             rps.main()
@@ -414,7 +414,7 @@ class TestListingFlags:
 
     def test_list_findings_needs_a_report(self, capsys, monkeypatch) -> None:
         monkeypatch.setattr(sys, "argv", [
-            "run_path_selection.py", "--list-findings",
+            "run_pipeline.py", "--list-findings",
         ])
         with pytest.raises(SystemExit) as exc:
             rps.main()

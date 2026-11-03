@@ -32,9 +32,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # ``src/``, so ``pdg_<project>.json``, ``cfg_cache/`` and the default ``output/``
 # all silently resolve to non-existent paths and the run degrades into "no CFG
 # cache" warnings instead of an error.  Fail at import instead.
-assert (REPO_ROOT / "run_path_selection.py").is_file(), (
+assert (REPO_ROOT / "run_pipeline.py").is_file(), (
     f"the repository root was computed as {REPO_ROOT}, which has no "
-    f"run_path_selection.py — the parents[N] index in layout.py is wrong"
+    f"run_pipeline.py — the parents[N] index in layout.py is wrong"
 )
 
 # Default base directory containing the project source trees + reports.  The

@@ -26,7 +26,7 @@ from report_frontend.registry import (
     rank_adapters,
     registered_adapters,
 )
-from report_frontend.models import AnalyzerKind, ReportFormat
+from report_frontend.report_model import AnalyzerKind, ReportFormat
 
 
 class TestRegistry:

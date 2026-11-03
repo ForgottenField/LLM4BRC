@@ -586,8 +586,8 @@ python3 tools/abc_compare.py      <回归集>
 **报告前端自查**（不需要 API key）：
 
 ```bash
-python3 run_path_selection.py --list-formats                  # 已注册的适配器
-python3 run_path_selection.py --list-findings --report x.sarif # 一份文档里的 finding
+python3 run_pipeline.py --list-formats                  # 已注册的适配器
+python3 run_pipeline.py --list-findings --report x.sarif # 一份文档里的 finding
 ```
 
 **种子集回归**（改 `build_project_deps` 或解析阶梯后必跑）：把改动前后的

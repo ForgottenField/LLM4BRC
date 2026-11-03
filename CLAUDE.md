@@ -43,16 +43,16 @@ python3 tools/probe_report_consistency.py <reports...>
 
 ```bash
 # Loads DEEPSEEK_API_KEY from ./.env; exits if unset
-python3 run_path_selection.py --report <path/to/report.html>
-python3 run_path_selection.py --report <path> --source-root ~/csa_reports/project/faiss
-python3 run_path_selection.py --project ~/csa_reports/project/faiss   # batch: scans reports/{TP,FP}
-python3 run_path_selection.py --scan-dir /path/to/reports --pdg pdg_faiss.json
+python3 run_pipeline.py --report <path/to/report.html>
+python3 run_pipeline.py --report <path> --source-root ~/csa_reports/project/faiss
+python3 run_pipeline.py --project ~/csa_reports/project/faiss   # batch: scans reports/{TP,FP}
+python3 run_pipeline.py --scan-dir /path/to/reports --pdg pdg_faiss.json
 
 # Other report formats (see docs/report-frontend.md); these two need no API key
-python3 run_path_selection.py --report results.sarif --report-format sarif
-python3 run_path_selection.py --report 'results.sarif::cpp/leap-year@AlignedTable.h:66'
-python3 run_path_selection.py --list-formats
-python3 run_path_selection.py --list-findings --report results.sarif
+python3 run_pipeline.py --report results.sarif --report-format sarif
+python3 run_pipeline.py --report 'results.sarif::cpp/leap-year@AlignedTable.h:66'
+python3 run_pipeline.py --list-formats
+python3 run_pipeline.py --list-findings --report results.sarif
 ```
 
 One *finding* is one unit of work: `--scan-dir`/`--project` expand a multi-finding document

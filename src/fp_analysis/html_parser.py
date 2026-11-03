@@ -29,7 +29,7 @@ from fp_analysis.report_bridge import to_bug_path, to_parsed_report
 from report_frontend.adapters.csa_html import CsaHtmlAdapter
 from report_frontend.code_model import SourceCodeModel
 from report_frontend.frontend import ReportFrontend, ReportRef
-from report_frontend.models import ReportFormat
+from report_frontend.report_model import ReportFormat
 
 logger = logging.getLogger(__name__)
 

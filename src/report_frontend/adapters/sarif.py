@@ -53,7 +53,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from ..errors import ReportParseError
-from ..models import (
+from ..report_model import (
     AnalyzerKind,
     BugFinding,
     PathEvidence,

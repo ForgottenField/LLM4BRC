@@ -38,7 +38,7 @@ The layers, and why the boundary is where it is:
     Work-item collection and the batch driver.
 
 **One-way dependency: the package never imports the entry script.**  It could
-not do so usefully anyway — ``run_path_selection.py`` lives at the repository
+not do so usefully anyway — ``run_pipeline.py`` lives at the repository
 root, outside ``src/``, so it is not importable under ``PYTHONPATH=src``.  The
 script imports *this*, and keeps a compatibility block of re-exports so the
 harness tools and the CLI tests that import from ``run_path_selection`` keep

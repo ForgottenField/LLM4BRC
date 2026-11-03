@@ -248,7 +248,7 @@ protobuf 全套缓存因此从 **30.8 GB 降到 35 MB**；faiss/folly 的既有�
 
 ```bash
 set -a; . ./.env; set +a     # DEEPSEEK_API_KEY
-python3 run_path_selection.py --project /home/yanghengqin/csa_reports/project/faiss \
+python3 run_pipeline.py --project /home/yanghengqin/csa_reports/project/faiss \
   --report .../reports/FP/report-index_read.cpp-read_index-484-1.html \
   --output output/faiss_smoke_readindex.json
 ```

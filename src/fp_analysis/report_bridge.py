@@ -34,7 +34,7 @@ from typing import Any, Optional
 from csa_analysis import BugPath, EventKind, PathEvent
 from fp_analysis.models import ParsedReport, ReportMetadata
 from report_frontend.frontend import LoadedReport
-from report_frontend.models import StepKind, TraceStep
+from report_frontend.report_model import StepKind, TraceStep
 
 logger = logging.getLogger(__name__)
 

@@ -34,7 +34,7 @@ from fp_analysis.report_bridge import (
 )
 from report_frontend import ReportFrontend
 from report_frontend.adapters.csa_html import CsaHtmlAdapter
-from report_frontend.models import AnalyzerKind, ReportFormat, StepKind
+from report_frontend.report_model import AnalyzerKind, ReportFormat, StepKind
 
 #: Captured from the legacy parser.  Every field of ``ReportMetadata``:
 LEGACY_METADATA = {

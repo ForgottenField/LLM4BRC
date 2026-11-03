@@ -66,7 +66,7 @@ import re
 from pathlib import Path
 
 from ..errors import MissingReportMetadata, ReportParseError
-from ..models import (
+from ..report_model import (
     AnalyzerKind,
     BugFinding,
     PathEvidence,

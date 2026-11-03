@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from report_frontend.models import (
+from report_frontend.report_model import (
     AnalyzerKind,
     ReportFormat,
     Severity,

@@ -24,7 +24,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 from .errors import ReportFrontendError, UnsupportedReportFormat
-from .models import AnalyzerKind, BugFinding, ReportDocument, ReportFormat
+from .report_model import AnalyzerKind, BugFinding, ReportDocument, ReportFormat
 
 logger = logging.getLogger(__name__)
 

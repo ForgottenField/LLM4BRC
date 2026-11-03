@@ -1,4 +1,4 @@
-"""The compatibility block in ``run_path_selection.py`` is a contract, not dead code.
+"""The compatibility block in ``run_pipeline.py`` is a contract, not dead code.
 
 The implementation moved into :mod:`pipeline`, but the
 harness tools (``tools/{replay_steps1to6,abc_compare,probe_report_consistency}.py``)
@@ -30,7 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import run_path_selection as rps  # noqa: E402
+import run_pipeline as rps  # noqa: E402
 
 
 #: Every name the block re-exports, and the module that really defines it.

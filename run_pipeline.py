@@ -19,8 +19,8 @@ re-exports the names the harness tools (``tools/``) and the CLI tests import
 from here — those imports are unchanged by the move, on purpose.
 
 Usage:
-    python3 run_path_selection.py --report <path/to/report.html>
-    python3 run_path_selection.py --source-root ~/csa_reports/project/faiss --report <path>
+    python3 run_pipeline.py --report <path/to/report.html>
+    python3 run_pipeline.py --source-root ~/csa_reports/project/faiss --report <path>
 """
 
 from __future__ import annotations

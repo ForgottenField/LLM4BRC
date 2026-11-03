@@ -167,12 +167,12 @@ python3 -m pytest tests/test_fp_analysis/test_conflict_checker.py
 python3 -m pytest tests/test_factory.py::TestProviderFactory::test_create_gpt_provider
 
 # 3) 端到端跑一份报告（会调 LLM）
-python3 run_path_selection.py --report ~/csa_reports/project/faiss/reports/FP/report-index_read.cpp-read_index-484-1.html
-python3 run_path_selection.py --source-root ~/csa_reports/project/faiss --report <report.html>
+python3 run_pipeline.py --report ~/csa_reports/project/faiss/reports/FP/report-index_read.cpp-read_index-484-1.html
+python3 run_pipeline.py --source-root ~/csa_reports/project/faiss --report <report.html>
 
 # 4) 批量：扫描 <projects-dir>/<project>/reports/{TP,FP}
-python3 run_path_selection.py --project ~/csa_reports/project/faiss
-python3 run_path_selection.py --scan-dir /path/to/reports --project faiss --max-reports 5
+python3 run_pipeline.py --project ~/csa_reports/project/faiss
+python3 run_pipeline.py --scan-dir /path/to/reports --project faiss --max-reports 5
 ```
 
 主要 CLI 参数：

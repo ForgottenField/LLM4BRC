@@ -36,7 +36,7 @@ from report_frontend.code_model import (
     SourceCodeModel,
     clear_index_cache,
 )
-from report_frontend.models import (
+from report_frontend.report_model import (
     AnalyzerKind,
     BugFinding,
     SourceLocation,

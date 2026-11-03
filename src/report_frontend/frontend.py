@@ -29,7 +29,7 @@ from typing import Iterator, Optional, Sequence
 from .adapters import load_adapters
 from .code_model import SourceCodeModel
 from .errors import ReportNotFoundError, ReportParseError, UnsupportedReportFormat
-from .models import (
+from .report_model import (
     FRONTEND_MODEL_VERSION,
     AnalyzerKind,
     BugFinding,

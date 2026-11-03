@@ -36,7 +36,7 @@ HERE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HERE / "src"))
 sys.path.insert(0, str(HERE))
 
-from run_path_selection import (  # noqa: E402
+from run_pipeline import (  # noqa: E402
     CFGCacheSet, resolve_source_file_for_cfg, build_slice_mask,
     build_dense_path_annotations, load_sdg, parse_report, run_branch_filter,
 )

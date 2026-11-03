@@ -18,35 +18,6 @@ resolvers that had grown up separately (``html_parser.resolve_report_source_file
 ``source_context.SourceContextExtractor._resolve_to_local``,
 ``build_project_deps.resolve_source``) and it makes the two defects they shared
 impossible:
-
-* **First-basename-wins.**  ``rglob(name)[0]`` returned whichever file the
-  filesystem happened to yield first.  ``search``, ``read_index`` and ``utils.h``
-  all exist several times in these trees; the model indexes the tree once,
-  prefers a *path-suffix* match over a basename match, and records the
-  candidates it chose between so an ambiguous resolution is visible in the
-  result JSON instead of silently deciding.
-* **A wrong file that looks right.**  Every strategy here is recorded
-  (``ResolvedFile.strategy``), so a report that resolved ``bug_file`` through
-  the basename fallback — the weak strategy — says so, and a caller that cares
-  (the dependency builder does) can refuse it.
-
-Reading is deliberately separate from resolving: :meth:`SourceCodeModel.snippet`
-prefers whatever the report *embedded* (a CSA report carries its own copy of
-the region it flagged, and that copy is authoritative for line alignment) and
-falls back to the local file, which is the only option for SARIF.
-
-**Materialisation** (:meth:`SourceCodeModel.materialize`) is the step that turns
-"the model is the one reader" from a convention into a fact: as soon as a report
-is loaded, the code its index points at is read *into* the model — whole files —
-so the stages below never go to the tree themselves.  It is deliberately not a
-whole-tree ingest: a report needs a handful of files (measured over the
-211-report corpus, 1–4 files, 18–187 KB mean, 1.4 MB worst case), while an
-unscoped search reads 1440 files / 23.6 MB to find the same thing
-(``find_function_definition``'s ``rglob`` over six extensions, every candidate
-opened and brace-matched).  What materialisation cannot anticipate — a callee
-body only discovered when stage 9 expands a branch — is served lazily and
-*counted* (:attr:`SourceCodeModel.lazy_reads`), so a pre-load that missed
-something is visible instead of silent.
 """
 
 from __future__ import annotations

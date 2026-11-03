@@ -4,7 +4,7 @@ This package holds the **engine**: the extractors, checkers, identifiers and
 models, one flat module per capability.  The **application** that drives them —
 the ten stages, the CLI's arguments, the console's output and the result JSON —
 is :mod:`pipeline`, and the repository root's
-``run_path_selection.py`` is the runner that calls it.  ``docs/pipeline-stages.md``
+``run_pipeline.py`` is the runner that calls it.  ``docs/pipeline-stages.md``
 is the authoritative description of the ten ordered stages and which module
 serves each.
 

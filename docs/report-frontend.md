@@ -249,10 +249,10 @@ ReportRef.parse("/x/faiss.sarif::cpp/leap-year@AlignedTable.h:66")
 `_collect_reports`（`pipeline.batch`）一侧。
 
 ```bash
-python3 run_path_selection.py --report <report.html | report.sarif[::<finding>]>
-python3 run_path_selection.py --report x.sarif --report-format sarif
-python3 run_path_selection.py --list-formats
-python3 run_path_selection.py --list-findings --report x.sarif
+python3 run_pipeline.py --report <report.html | report.sarif[::<finding>]>
+python3 run_pipeline.py --report x.sarif --report-format sarif
+python3 run_pipeline.py --list-formats
+python3 run_pipeline.py --list-findings --report x.sarif
 ```
 
 - `--report-format` 钉住适配器（绕过探测歧义）；`--list-formats` 打印适配器表；

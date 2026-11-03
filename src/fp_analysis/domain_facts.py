@@ -14,7 +14,7 @@ that source code pins to a finite constant set (via ``==`` / ``!=`` against fold
 constants) on the reported bug path, *folds* those constants to concrete values where
 deterministic (integer literals; recognized 4-char constant factories such as ``fourcc``),
 and produces :class:`DomainFact` records.  These facts are rendered as advisory prose and
-injected into the constraint text the LLM auditor sees (see run_path_selection.py), so the
+injected into the constraint text the LLM auditor sees (see run_pipeline.py), so the
 LLM can reason that a variable CSA left "arbitrary" actually has a small, fixed domain —
 helping it conclude a report is a false positive.
 

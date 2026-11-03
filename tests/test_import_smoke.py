@@ -20,7 +20,7 @@ def test_canonical_packages_import() -> None:
 def test_repository_root_is_resolved_from_actual_layout() -> None:
     from pipeline.layout import REPO_ROOT
 
-    assert (REPO_ROOT / "run_path_selection.py").is_file()
+    assert (REPO_ROOT / "run_pipeline.py").is_file()
     assert (REPO_ROOT / "src" / "pipeline" / "layout.py").is_file()
 
 
