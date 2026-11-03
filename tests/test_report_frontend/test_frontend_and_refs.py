@@ -193,7 +193,7 @@ class TestLoading:
 
     def test_detect_format(self, sarif_path: Path, csa_report: Path) -> None:
         frontend = ReportFrontend()
-        assert frontend.detect_format(sarif_path).value == "sarif"
+        assert frontend.detect_format(sarif_path).value == "codeql-sarif"
         assert frontend.detect_format(csa_report).value == "csa-html"
 
     def test_pinned_format_overrides_detection(self, tmp_path: Path) -> None:

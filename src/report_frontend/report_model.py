@@ -75,7 +75,7 @@ class ReportFormat(str, Enum):
     """On-disk shape of the report document (the *container*, not the tool)."""
 
     CSA_HTML = "csa-html"
-    CODEQL_SARIF = "codeql_sarif"
+    CODEQL_SARIF = "codeql-sarif"
     INFER_JSON = "infer-json"
     CPPCHECK_XML = "cppcheck-xml"
     UNKNOWN = "unknown"

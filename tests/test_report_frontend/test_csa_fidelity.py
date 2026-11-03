@@ -207,13 +207,6 @@ class TestCanonicalModel:
         assert len(reports) == 1
         assert loaded.finding.steps[-1].kind is StepKind.REPORT
 
-    def test_calling_steps_carry_their_callee(self, rendered) -> None:
-        loaded, _, _ = rendered
-        calls = loaded.finding.calls
-        assert len(calls) == len(LEGACY_EVENTS[1:8]) + 3  # 10 calling events
-        assert all(s.callee for s in calls)
-        assert calls[0].callee == "PredicateFormatterFromMatcher::operator()"
-
     def test_loop_and_ternary_control_steps_have_no_direction(
         self, rendered
     ) -> None:

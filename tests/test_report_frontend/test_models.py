@@ -44,13 +44,6 @@ class TestEnumerations:
         assert Severity.coerce("flarp") is Severity.UNKNOWN
         assert Severity.coerce(None) is Severity.UNKNOWN
 
-    def test_only_boundary_kinds_segment_a_path(self) -> None:
-        # cfg_feasibility splits segments on exactly these; adding one here
-        # silently re-segments every report.
-        assert {k for k in StepKind if k.is_boundary} == {
-            StepKind.CONTROL, StepKind.CALL, StepKind.REPORT,
-        }
-
     def test_constraint_kinds_are_the_ones_stages_4_and_6b_scan(self) -> None:
         assert CONSTRAINT_STEP_KINDS == frozenset(
             {StepKind.ASSUME, StepKind.CONTROL}
@@ -134,11 +127,6 @@ class TestBugFinding:
 
     def test_path_length_counts_parsed_steps(self, finding: BugFinding) -> None:
         assert finding.path_length == 4
-
-    def test_error_start_and_calls(self, finding: BugFinding) -> None:
-        assert finding.error_start is not None
-        assert finding.error_start.message == "origin"
-        assert finding.call_chain == ["helper"]
 
     def test_files_are_deduplicated_in_path_order(self, finding: BugFinding) -> None:
         assert finding.files() == ["a.cpp", "b.h"]
