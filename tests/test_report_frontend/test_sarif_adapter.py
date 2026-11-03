@@ -30,7 +30,7 @@ def document(sarif_path: Path):
 
 class TestDocument:
     def test_tool_and_format(self, document) -> None:
-        assert document.format is ReportFormat.SARIF
+        assert document.format is ReportFormat.CODEQL_SARIF
         assert document.analyzer is AnalyzerKind.CODEQL
         assert document.tool_version == "2.16.1"
 

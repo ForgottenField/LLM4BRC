@@ -154,7 +154,7 @@ class TestAmbiguityIsLoud:
 class TestLoadDocument:
     def test_loads_and_labels_the_document(self, sarif_path: Path) -> None:
         document = load_document(sarif_path)
-        assert document.format is ReportFormat.SARIF
+        assert document.format is ReportFormat.CODEQL_SARIF
         assert document.analyzer is AnalyzerKind.CODEQL
         assert len(document.findings) == 2
         assert document.tool_version == "2.16.1"
