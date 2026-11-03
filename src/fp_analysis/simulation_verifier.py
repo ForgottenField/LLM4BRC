@@ -399,8 +399,6 @@ class SimulationVerifier:
         }
 
     def _source_context(self, analysis) -> str:
-        if getattr(analysis, "reduced_code", ""):
-            return analysis.reduced_code
         try:
             return self._analyzer.extract_source_context(
                 analysis.parsed_report, max_lines=60,
@@ -626,6 +624,15 @@ class SimulationVerifier:
             user_prompt += "\n\n" + domain_text
             logger.info("Simulation: appended %d guard-pinned domain-fact lines",
                         domain_text.count("\n") + 1)
+
+        lite_evidence = self._analyzer.lite_evidence if self._analyzer else ""
+        if lite_evidence:
+            user_prompt += (
+                "\n\n## Lightweight AST / PDG-Lite Cross-check\n"
+                "This syntax-derived graph may omit macro/template/overload "
+                "details. The exact PDG and the reported path remain authoritative.\n"
+                f"{lite_evidence}\n"
+            )
 
         raw = self._analyzer.call_llm(
             system_prompt, user_prompt, max_tokens=_SIMULATION_MAX_TOKENS

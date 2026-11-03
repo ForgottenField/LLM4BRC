@@ -1,5 +1,15 @@
 # C++ 项目依赖图构建指南（PDG + CFG cache）—— 以 faiss 为例的统一方法
 
+> Exact dependency graphs are now optional. The default pipeline uses the
+> bounded Tree-sitter AST/PDG-Lite backend and treats the artifacts in this
+> guide as the exact fallback for reports that need Clang-grade semantics or
+> for explicit `--no-lite-graph` / `--pdg` runs.
+>
+> The Tree-sitter fast path still needs preprocessing configuration. Its
+> required default location is `<project-root>/compile_commands.json`, or an
+> explicit path passed with `--compile-commands`. The `/tmp/<project>_cc/`
+> paths below remain inputs for offline exact PDG/CFG artifact builds.
+
 > 本文档记录「为一个 CSA 目标 C++ 项目构建本流水线所需依赖图」的**完整、可复用流程**：
 > 如何生成 `compile_commands.json`、构建 `pdg_<project>.json`、离线预热 `cfg_cache/<project>/`，并注册工程配置。
 > 以本次 **faiss** 的实际构建为实例，最后给出**统一化（多项目一键式）**的分析与推荐方案。
@@ -13,7 +23,7 @@
 
 ## 0. 为什么每个项目需要「三件套」
 
-`run_path_selection.py` 分析一份 CSA 报告时，需要目标项目的三种结构数据。缺一不可：
+`run_pipeline.py` 分析一份 CSA 报告时，需要目标项目的三种结构数据。缺一不可：
 
 | 产物 | 位置 | 由谁消费 | 内容 |
 |---|---|---|---|
@@ -21,7 +31,7 @@
 | **`cfg_cache/<project>/*.json`** | `cfg_cache/<project>/` | `CFGCacheSet`（`fp_analysis/cfg_cache_set.py`）→ 分段后按路径文件**按需加载并合并** | 每个**编译单元**的全 TU CFG（按 `md5(绝对源路径)` 命名） |
 | **工程配置** | `cfg_parser.py` 的 `_CFG_PROJECT_CONFIGS` | 运行时 `build_cfg_command` | 每个项目的 include / define / force_include |
 
-顶层 `run_path_selection.py` **不会**在运行时自动构建 PDG 或 CFG cache：
+顶层 `run_pipeline.py` **不会**在运行时自动构建 PDG 或 CFG cache：
 - PDG 必须预先存在（`load_sdg` 直接读文件）；
 - CFG cache 只做**查找**（按 md5 glob），缺失就 `WARNING: no CFG cache for <file>` —— 不会现场 dump。
 
@@ -247,7 +257,7 @@ protobuf 全套缓存因此从 **30.8 GB 降到 35 MB**；faiss/folly 的既有�
 快跑 2–3 份报告（一份 TP 目录 + 一到两份 FP 目录），核对：
 
 ```bash
-set -a; . ./.env; set +a     # DEEPSEEK_API_KEY
+python3 run_pipeline.py --report <report.html>  # key: config/api_key.json
 python3 run_pipeline.py --project /home/yanghengqin/csa_reports/project/faiss \
   --report .../reports/FP/report-index_read.cpp-read_index-484-1.html \
   --output output/faiss_smoke_readindex.json

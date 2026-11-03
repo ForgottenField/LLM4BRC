@@ -56,7 +56,7 @@ def _bare_analyzer(provider, max_tokens: int) -> FPAnalyzer:
 
 
 def _fake_analysis():
-    """Minimal stand-in for the PathAnalysis the verifier prompts from."""
+    """Minimal stand-in for the analysis view the verifier prompts from."""
     md = MagicMock()
     md.bug_type = "Dereference of null pointer"
     md.bug_file = "index_read.cpp"
@@ -102,6 +102,10 @@ class _StubAnalyzer:
     @property
     def domain_facts_text(self):
         return self._domain_facts_text
+
+    @property
+    def lite_evidence(self):
+        return ""
 
     parse_json_response = staticmethod(FPAnalyzer._parse_json_response)
     parse_json_response_tolerant = staticmethod(

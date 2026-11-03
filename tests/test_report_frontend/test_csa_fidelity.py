@@ -32,7 +32,7 @@ from fp_analysis.report_bridge import (
     to_bug_path,
     to_parsed_report,
 )
-from report_frontend import ReportFrontend
+from report_frontend import ReportFrontend, ReportRef
 from report_frontend.adapters.csa_html import CsaHtmlAdapter
 from report_frontend.report_model import AnalyzerKind, ReportFormat, StepKind
 
@@ -294,6 +294,34 @@ class TestEmbeddedCodeText:
         by_file = CsaHtmlAdapter.extract_file_lines(html)
         assert windowed[11] == "n > 0"
         assert by_file["/build/proj/src/a.cc"][11] == "n > 0"
+
+    def test_relative_section_alias_does_not_mix_other_files(
+        self, tmp_path: Path,
+    ) -> None:
+        header = tmp_path / "header.h"
+        header.write_text(
+            "\n".join(["// header"] * 9 + ["int header_value = 1;"]) + "\n"
+        )
+        report = tmp_path / "report-alias.html"
+        report.write_text(
+            "<!-- BUGTYPE test bug -->\n"
+            "<!-- BUGCATEGORY Logic error -->\n"
+            "<!-- BUGFILE /build/proj/src/header.h -->\n"
+            "<!-- BUGLINE 10 -->\n"
+            "<!-- BUGCOLUMN 1 -->\n"
+            "<!-- BUGPATHLENGTH 0 -->\n"
+            + _listing((10, "int header_value = 1;"), file="./header.h")
+            + _listing((10, "int foreign_value = 2;"),
+                       file="/build/proj/src/other.cc")
+        )
+
+        loaded = ReportFrontend(source_root=tmp_path).load(ReportRef(report))
+        model = loaded.code
+        snippets = model.snippet(loaded.finding.location.file, 10, radius=0)
+
+        assert snippets == {10: "int header_value = 1;"}
+        assert model.has_embedded(loaded.finding.location.file)
+        assert model.drift == []
 
 
 # ---------------------------------------------------------------------------

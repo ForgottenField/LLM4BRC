@@ -56,6 +56,7 @@ class Stage1Parse:
     bug_path: object
     loaded: object
     entry_fn: str
+    lite_graph: object = None
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,7 @@ class AssembledProject:
     cache_set: object
     cfg_cache: dict
     sdg: object
+    graph_backend: str = "exact"
 
 
 @dataclass(frozen=True)
@@ -202,6 +204,7 @@ class SelectionContext:
     report_ref: object
     analyzer: PathAnalyzerPort
     parsed_report: object
+    loaded: object
     segments: list
     slice_mask: object
     sdg: object
@@ -222,4 +225,5 @@ class SelectionContext:
     out_path: Path
     report_stem: str
     entry_fn: str
+    lite_graph: object
     total_start: float

@@ -88,7 +88,7 @@ leak 层一致性推广、路径探索聚合——它们让**一条路径上的�
 ## 3. 仓库结构
 
 ```
-run_path_selection.py          # Thin runner: argparse + .env + main + compatibility exports
+run_pipeline.py          # Thin runner: argparse + credentials + main + compatibility exports
 src/
   ├── llm_client/              # LLMProvider abstraction (DeepSeek / Claude / GPT)
   │   ├── base.py / factory.py
@@ -113,6 +113,7 @@ src/
   │   ├── stages.py  selection.py               # Stage 1-5 and 9-10 drivers
   │   ├── outcomes.py  schemas.py  protocols.py # Verdict, result, and port contracts
   │   └── project_paths.py  artifacts.py  batch.py  models.py  layout.py  io.py
+  ├── tree_sitter_backend/     # Independent C/C++ AST and PDG-Lite backend
   └── csa_analysis/            # Native tools (PDG, call graph, reachability checker)
       ├── pdg/PDGBuilder.cpp      build.sh   # pdg_<project>.json producer
       ├── callgraph/              build.sh
@@ -126,7 +127,9 @@ docs/                          # Method documentation (see section 7)
 
 | 产物 | 位置 | 生产者 | 消费者 |
 |---|---|---|---|
-| `pdg_<project>.json` | 仓库根目录 | `csa_analysis/pdg/`（`pdg_builder`） | 阶段 3 切片、阶段 5 分支抽取、函数归属 |
+| `compile_commands.json` | `<project-root>/compile_commands.json` | Project build or an experiment-specific generated database | Tree-sitter preprocessing (`compiler -E`) |
+| `tree-sitter` AST / PDG-Lite | In memory | `tree_sitter_backend/` | Default fast path for stages 1, 3, 5, and LLM evidence |
+| `pdg_<project>.json` | 仓库根目录 | `csa_analysis/pdg/`（`pdg_builder`） | Exact fallback for stages 3/5 and function attribution |
 | `cfg_cache/<project>/*.json` | `cfg_cache/` | `cfg_feasibility` 离线 dump | 阶段 2/5 的 CFG 分支抽取（按需加载合并多 TU） |
 | `constraint_cache/` | `constraint_cache/` | `constraint_miner` | 阶段 4/5 约束复用 |
 | 运行产物 | `output/` | 流水线本身 | 人工阅读；可随时清空 |
@@ -137,12 +140,12 @@ docs/                          # Method documentation (see section 7)
 
 - Linux
 - **Python >= 3.13** (local runtime and CI baseline: 3.13)
-- `clang++-14` + `llvm-config-14`（构建 C++ 插件，动态链接 `libclang-cpp`）
+- `clang++-14` + `llvm-config-14` only when building the exact PDG fallback
 - `cmake ≥ 3.16`
 - 所选 LLM Provider 的 API key（默认 DeepSeek）
 
-Provider API keys: `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, or
-`ANTHROPIC_API_KEY`.
+Provider API keys are read from `config/api_key.json`. The file is gitignored;
+use `config/api_key.example.json` as the schema.
 
 Project and test dependencies are managed by `pyproject.toml`:
 
@@ -150,8 +153,7 @@ Project and test dependencies are managed by `pyproject.toml`:
 # Install the project and development dependencies.
 python3 -m pip install -e ".[dev]"
 
-# API key：放在仓库根的 .env（已 gitignore，绝不提交）
-echo 'DEEPSEEK_API_KEY=sk-...' > .env
+# API key: edit config/api_key.json (gitignored).
 ```
 
 ---
@@ -167,12 +169,16 @@ python3 -m pytest tests/test_fp_analysis/test_conflict_checker.py
 python3 -m pytest tests/test_factory.py::TestProviderFactory::test_create_gpt_provider
 
 # 3) 端到端跑一份报告（会调 LLM）
-python3 run_pipeline.py --report ~/csa_reports/project/faiss/reports/FP/report-index_read.cpp-read_index-484-1.html
-python3 run_pipeline.py --source-root ~/csa_reports/project/faiss --report <report.html>
+python3 run_pipeline.py --project ~/csa_reports/project/faiss --report <report.html>
+python3 run_pipeline.py --source-root ~/csa_reports/project/faiss \
+  --compile-commands /path/to/faiss/compile_commands.json --report <report.html>
 
 # 4) 批量：扫描 <projects-dir>/<project>/reports/{TP,FP}
 python3 run_pipeline.py --project ~/csa_reports/project/faiss
 python3 run_pipeline.py --scan-dir /path/to/reports --project faiss --max-reports 5
+
+# 5) Exact Clang/LibTooling fallback (disables Tree-sitter)
+python3 run_pipeline.py --project faiss --no-lite-graph --pdg pdg_faiss.json
 ```
 
 主要 CLI 参数：
@@ -184,25 +190,92 @@ python3 run_pipeline.py --scan-dir /path/to/reports --project faiss --max-report
 | `--scan-dir <dir>` | 批量扫描任意目录下的 `report-*.html` |
 | `--source-root <dir>` | 显式源根（覆盖 `--project` 推断） |
 | `--projects-dir <dir>` | 语料基目录（默认 `~/csa_reports/project`） |
-| `--pdg` / `--cfg-cache` | 显式指定产物 |
+| `--pdg <file>` | Explicit exact PDG; also selects the exact backend |
+| `--cfg-cache <file>` | Explicit CFG cache artifact |
+| `--no-lite-graph` | Require and use the exact PDG backend |
+| `--lite-graph-timeout N` | Isolated Tree-sitter worker timeout (default: 30s) |
+| `--compile-commands <file>` | Override `<source-root>/compile_commands.json` |
 | `--max-path-attempts N` | 路径遍历阈值，超过则 UNKNOWN（默认 3） |
 | `--path-space` | 打印每段可行路径空间的 ASCII 树 |
-| `--output` | 单报告时是结果文件路径；批量时是**目录**（默认 `output/path_selection_<report>.json`） |
-| `--batch-summary` | 批量聚合 JSON（默认 `output/batch_summary.json`），与 `--output` 分开以免互相覆盖 |
+| `--output` | Override the per-run report output directory |
+| `--batch-summary` | Override the aggregate JSON path |
 | `--provider` | LLM provider: `deepseek` (default), `gpt`, or `claude` |
 | `--model` | Override the provider's default model |
 | `--llm-timeout` | Per-request LLM timeout in seconds (default: 120) |
+| `--api-key-file` | Credential JSON path (default: `config/api_key.json`) |
+| `--results-root` | Root for timestamped run outputs (default: `results/`) |
+
+Unless `--output` is passed explicitly, each invocation writes:
+
+```text
+results/<UTC timestamp>/<project>/
+  reports/             # one path_selection_*.json per work item
+  pocs/                # generated POC sources
+  batch_summary.json
+  run_manifest.json
+  run.log
+```
 
 > **没有模式开关**：冲突驱动选路是唯一的选路机制，POC 验证恒开。
 > 历史上的 `--verify` / `--no-verify` / `--v2` / `FP_USE_CONFLICT_LEARNING` 已全部删除，请不要再加。
 
 ---
 
-## 6. 准备一个项目的「三件套」
+## 6. Analysis graph preparation
 
-`run_path_selection.py` **从不自动构建**产物：`pdg_<project>.json` 必须已存在
-（缺失即报错退出，绝不替换成别的项目），CFG cache 只做查表（未命中打
-`WARNING: no CFG cache for <file>`）。
+By default, the pipeline parses only the source files referenced by the current
+report with Tree-sitter. It creates function-scoped control/data dependencies,
+call sites, a lightweight PDG, and compact LLM evidence without compiling the
+project. This graph drives slicing and branch filtering when no exact artifact
+is selected.
+
+The Tree-sitter fast path requires a project-local compilation database at:
+
+```text
+<project-root>/compile_commands.json
+```
+
+The location follows the standard `compile_commands.json` convention and keeps
+platform-specific preprocessing decisions beside the source tree they describe.
+An explicit alternative can be supplied with `--compile-commands <path>`.
+Every source file referenced by a report, including headers, must have an entry.
+The backend runs only the compiler preprocessor (`-E`); it does not compile,
+link, or build Clang CFG/PDG artifacts.
+
+Minimal entry shape:
+
+```json
+[
+  {
+    "directory": "/absolute/path/to/project",
+    "file": "/absolute/path/to/project/src/file.cpp",
+    "arguments": [
+      "g++", "-std=c++17", "-I/absolute/path/to/project/src",
+      "-DEXPECTED_CONFIG=1", "-c",
+      "/absolute/path/to/project/src/file.cpp", "-o", "/tmp/file.o"
+    ]
+  }
+]
+```
+
+`arguments` may be replaced by a standard shell-form `command` string. The
+preprocessor invocation removes `-c`, output flags, and dependency-file flags,
+then supplies `-E`. An unresolved macro is therefore a compile-database
+configuration error even when `-E` itself exits successfully.
+
+For controlled experiments, generate a minimal database from the reported
+source set and the preprocessing configuration under test. Store generated
+databases outside version control unless the project intentionally publishes
+its compilation database.
+
+An existing `pdg_<project>.json` is an exact fallback. It is selected from
+`--pdg`, `--no-lite-graph`, or automatically when the bounded syntax graph is
+unavailable or does not cover the report's entry location. CFG caches remain
+optional and are still consumed when present.
+
+`run_pipeline.py` never runs the heavyweight project build automatically.
+Missing CFG data emits `WARNING: no CFG cache for <file>`; a missing exact PDG
+does not stop the default Tree-sitter path.
 
 按需构建（只建报告真正走到的 TU——种子来自报告本身，再加有界的被调闭包）：
 

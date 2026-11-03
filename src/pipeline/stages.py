@@ -21,25 +21,24 @@ from pathlib import Path
 
 from fp_analysis.cfg_branch_extractor import CFGBranchExtractor
 from fp_analysis.cfg_branch_models import Postcondition
-from fp_analysis.cfg_cache_set import CFGCacheSet
+from fp_analysis.cfg_cache_set import CFGCacheSet, find_fn_key
 from fp_analysis.cfg_feasibility import segment_path as _segment_path
-from fp_analysis.condition_extractor import extract_condition
+from fp_analysis.condition_extractor import extract_condition_from_lines
 from fp_analysis.conflict_checker import ConflictChecker
+from fp_analysis.models import code_model_of
 from fp_analysis.path_seed_extractor import (
     build_caller_map,
     build_path_annotations,
     extract_seeds_from_bug_path,
 )
 from fp_analysis.pdg_models import SDG
-from fp_analysis.report_bridge import to_bug_path, to_parsed_report
+from fp_analysis.report_bridge import to_legacy
 from fp_analysis.slice_mask import SliceMask
 from fp_analysis.slicer import SlicerConfig, compute_slice_from_seeds
 from fp_analysis.structural_pruning import build_pruner_from_segments
 from report_frontend import ReportFrontend
 
 from pipeline.layout import get_logger
-from pipeline.project_paths import find_fn_key
-
 logger = get_logger()
 
 
@@ -106,8 +105,7 @@ def parse_report(ref, source_root: Path, report_format: str | None = None):
     """
     frontend = ReportFrontend(source_root=str(source_root), report_format=report_format)
     loaded = frontend.load(ref)
-    parsed = to_parsed_report(loaded)
-    bug_path = to_bug_path(loaded)
+    parsed, bug_path = to_legacy(loaded)
     for warning in loaded.warnings:
         logger.warning("report frontend: %s", warning)
     logger.info(
@@ -264,12 +262,14 @@ def run_branch_filter(
         (segment_results, branch_counts) where branch_counts is
         {seg_idx: count_of_insufficient_info_branches}.
     """
-    from fp_analysis.path_analyzer import resolve_source_path
-
     bug_file = parsed_report.metadata.bug_file
-    resolved_src = resolve_source_path(bug_file, str(source_root))
+    model = code_model_of(parsed_report, str(source_root))
+    bug_hit = model.resolve_strong(bug_file)
+    resolved_src = str(bug_hit) if bug_hit else bug_file
+    src_lines = model.lines(bug_hit) if bug_hit else None
     pruner = build_pruner_from_segments(segments, resolved_src,
-                                         path_events=parsed_report.path_events)
+                                         path_events=parsed_report.path_events,
+                                         source_lines=src_lines)
 
     # Bug-function source boundaries (when the resolved source is readable).
     # Used to guard the empty-function-name fallback: a segment whose function
@@ -279,16 +279,11 @@ def run_branch_filter(
     # the bug function's branches for every unresolved segment.
     bug_fn_name = parsed_report.metadata.function_name
     bug_fn_bounds: list[tuple[int, int]] = []
-    if resolved_src:
+    if src_lines:
         from fp_analysis.cfg_feasibility import _find_function_boundaries
-        try:
-            _flines = Path(resolved_src).read_text(
-                encoding="utf-8", errors="replace").splitlines()
-            for _n, _s, _e in _find_function_boundaries(Path(resolved_src), _flines):
-                if _n == bug_fn_name:
-                    bug_fn_bounds.append((_s, _e))
-        except OSError:
-            pass
+        for _n, _s, _e in _find_function_boundaries(Path(resolved_src), src_lines):
+            if _n == bug_fn_name:
+                bug_fn_bounds.append((_s, _e))
 
     results = []
     insufficient_counts: dict[int, int] = {}
@@ -385,16 +380,9 @@ def run_branch_filter(
         # reference a source file not present on disk (e.g. a gtest/folly dep header
         # resolved to a non-existent fbcode_builder temp path). Missing source must
         # not crash the report — fall back to None (conflict checker runs without it).
-        src_lines = None
-        if resolved_src:
-            try:
-                src_lines = Path(resolved_src).read_text().splitlines()
-            except OSError as e:
-                logger.warning(
-                    "branch filter: cannot read source %s (%s); continuing without source lines",
-                    resolved_src, e,
-                )
-        checker = ConflictChecker(sdg, cfg_cache, slice_mask)
+        checker = ConflictChecker(
+            sdg, cfg_cache, slice_mask, structural_pruner=pruner,
+        )
         tree = checker.check_segment(
             tree, segment, established_state or {},
             path_events=parsed_report.path_events,
@@ -434,9 +422,10 @@ def _build_postcondition(segment, parsed_report, source_root: Path) -> Postcondi
                 # Try to extract concrete condition from source code
                 source_file = evt.get("file_path", "") or parsed_report.metadata.bug_file
                 if source_file:
-                    from fp_analysis.path_analyzer import resolve_source_path
-                    resolved = resolve_source_path(source_file, str(source_root))
-                    extracted = extract_condition(resolved, evt_line, source_root=str(source_root))
+                    model = code_model_of(parsed_report, str(source_root))
+                    hit = model.resolve_strong(source_file)
+                    lines = model.lines(hit) if hit else []
+                    extracted = extract_condition_from_lines(lines, evt_line)
                     if extracted.confidence > 0:
                         evt_desc = extracted.expression
                         evt_line = extracted.source_line

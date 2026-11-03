@@ -65,7 +65,7 @@ import logging
 import re
 from pathlib import Path
 
-from ..errors import MissingReportMetadata, ReportParseError
+from ..errors import MissingReportMetadata
 from ..report_model import (
     AnalyzerKind,
     BugFinding,
@@ -643,17 +643,7 @@ class CsaHtmlAdapter(ReportAdapter):
         return out
 
 
-def parse_csa_html(path: Path, text: str | None = None) -> ReportDocument:
-    """Convenience: parse a CSA HTML file without going through detection."""
-    if text is None:
-        if not path.exists():
-            raise ReportParseError(f"FP report not found: {path}")
-        text = path.read_text(encoding="utf-8", errors="replace")
-    return CsaHtmlAdapter().load(path, text)
-
-
 __all__ = [
     "CsaHtmlAdapter",
     "DocIndex",
-    "parse_csa_html",
 ]

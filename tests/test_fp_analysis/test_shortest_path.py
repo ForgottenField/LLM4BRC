@@ -4,7 +4,6 @@ shortest-path selection + conflict-driven learning.
 
 from __future__ import annotations
 
-import pytest
 from fp_analysis.cfg_branch_models import (
     BranchTag,
     CFGBranchNode,
@@ -351,7 +350,7 @@ class TestShortestPathComputer:
 
     def test_metric_ordering_s_before_c_before_v(self):
         """Candidates are sorted by S↑ → C↑ → V↑."""
-        from fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache, PathMetrics
+        from fp_analysis.shortest_path import PathMetrics
 
         # We'll verify that PathMetrics ordering works correctly
         m1 = PathMetrics(S=3, C=1, V=2)

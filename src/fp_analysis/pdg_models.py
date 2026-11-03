@@ -18,7 +18,6 @@ backward slicing.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Optional
 
 #: Version of the ``pdg_<project>.json`` artifact this code understands.  It
@@ -347,38 +346,6 @@ class SDG:
         self.line_index = idx
         return idx
 
-    def file_index_memory(self) -> dict:
-        """Return memory estimate for the file index."""
-        if self.file_index is None:
-            return {"built": False}
-        n_files = len(self.file_index)
-        total_fn_refs = sum(len(v) for v in self.file_index.values())
-        return {
-            "built": True,
-            "unique_files": n_files,
-            "function_references": total_fn_refs,
-            "estimated_kb": round(
-                (n_files * 232 + total_fn_refs * 8 + n_files * 64) / 1024, 1,
-            ),
-        }
-
-    def line_index_memory(self) -> dict:
-        """Return memory estimate for the line index."""
-        if self.line_index is None:
-            return {"built": False}
-        n_keys = len(self.line_index)
-        total_refs = sum(len(v) for v in self.line_index.values())
-        key_bytes = n_keys * 56
-        dict_bytes = n_keys * 232
-        val_tuple_bytes = total_refs * 56
-        list_overhead = n_keys * 64 + total_refs * 8
-        total = key_bytes + dict_bytes + val_tuple_bytes + list_overhead
-        return {
-            "built": True,
-            "unique_keys": n_keys,
-            "total_references": total_refs,
-            "estimated_kb": round(total / 1024, 1),
-        }
 
     def get_pdg(self, function_name: str) -> Optional[FunctionPDG]:
         """Look up a PDG by qualified function name.

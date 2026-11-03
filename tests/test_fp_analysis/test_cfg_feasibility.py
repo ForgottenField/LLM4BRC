@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from fp_analysis.cfg_feasibility import extract_assumptions_from_events
 

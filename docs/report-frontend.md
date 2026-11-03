@@ -13,7 +13,7 @@
 
 | 层 | 文件 | 职责 |
 |---|---|---|
-| 规范模型 | `models.py` | `BugFinding`（断言了什么）、`TraceStep`（怎么走到那里）、`SourceLocation`（在哪）、`ReportDocument`（一个文件里的全部 finding） |
+| Canonical model | `report_model.py` | `BugFinding`, `TraceStep`, `SourceLocation`, and `ReportModel` (all findings in one document) |
 | 代码模型 | `code_model.py` | `SourceCodeModel` / `ResolvedFile`：把报告里的路径解析到本地源码树，并**记录用了哪一级策略**；报告自带源码时从报告读 |
 | 适配器 | `adapters/csa_html.py`、`adapters/sarif.py` | 每种容器格式一个文件，归一化到规范模型 |
 | 注册与探测 | `registry.py` | 适配器注册表、`sniff()` 打分、歧义处理、`--report-format` 覆盖 |
@@ -167,7 +167,7 @@ drift：`{reported, line, embedded, local, strategy}`——`strategy` 是**怎�
 class ReportAdapter(ABC):
     name: str; format: ReportFormat; analyzer: AnalyzerKind; suffixes: tuple[str, ...]
     def sniff(self, path, head) -> float:   # [0,1]，默认只看后缀
-    def load(self, path, text) -> ReportDocument:  # 整个文档 → 全部 finding
+    def load(self, path, text) -> ReportModel:  # whole document -> all findings
 ```
 
 - **注册**：`@register` 装饰器，`adapters/__init__.py` 里 import 即注册。
@@ -244,7 +244,7 @@ ReportRef.parse("/x/faiss.sarif::cpp/leap-year@AlignedTable.h:66")
 
 ### 7.1 脚本 / 流水线入口（阶段 1）
 
-`run_path_selection.py` 是运行器（argparse / `.env` / `main()` / 兼容再导出）；前端是在
+`run_pipeline.py` 是运行器（argparse / credential loading / `main()` / 兼容再导出）；前端是在
 `pipeline.stages.parse_report` 里被调用的，`ReportRef` 的展开在 `run_path_selection.main` 的
 `_collect_reports`（`pipeline.batch`）一侧。
 
@@ -257,7 +257,7 @@ python3 run_pipeline.py --list-findings --report x.sarif
 
 - `--report-format` 钉住适配器（绕过探测歧义）；`--list-formats` 打印适配器表；
   `--list-findings` 打印一份文档里的 finding id / rule / 严重度 / 位置。这两个开关在
-  **`.env`/API key 检查之前**就短路退出，所以它们永远不需要 key。
+  **API key 检查之前**就短路退出，所以它们永远不需要 key。
 - 结果 JSON 与批处理汇总用 `report` / `report_file` / `finding` 三个字段：无 selector 时 `report`
   **仍是原来的文件名**（既有产物不变），有 selector 时用 `key`（62 个 finding 不会互相覆盖）。
 - SARIF 没有函数名，于是 `_infer_entry_function(sdg, parsed)` 从 PDG 反推：取**同文件、行区间

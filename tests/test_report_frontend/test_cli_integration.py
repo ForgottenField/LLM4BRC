@@ -269,6 +269,21 @@ class TestSourceRootInference:
         assert "pdg_nosuchproject.json" in str(exc.value)
         assert "--pdg" in str(exc.value)
 
+    def test_lite_first_allows_a_missing_exact_pdg(self, tmp_path: Path,
+                                                   sarif_path: Path) -> None:
+        root = tmp_path / "nosuchproject"
+        root.mkdir()
+        (root / "CMakeLists.txt").write_text("project(nosuchproject)\n")
+
+        _, _, pdg_path, source_root = rps._resolve_paths(
+            _args(project=str(root)),
+            ReportRef(sarif_path),
+            require_pdg=False,
+        )
+
+        assert pdg_path is None
+        assert source_root == root.resolve()
+
 
 class TestPdgVersionGuard:
     """A stale artifact parses fine; only its declaration says it is stale."""

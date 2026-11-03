@@ -77,3 +77,4 @@ class ResultDocument(TypedDict, total=False):
     report_self_contradiction: dict[str, Any]
     entry_state_fabrication: dict[str, Any]
     semantic_feasibility: dict[str, Any]
+    lite_graph: dict[str, Any] | None

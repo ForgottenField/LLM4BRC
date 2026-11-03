@@ -828,16 +828,12 @@ def find_else_chain_for_true_if(
     # 2. Find the 'else' keyword after the if-true-block's closing '}'
     # The '}' may share a line with 'else', or 'else' may be on the next line.
     else_keyword_line = -1
-    else_keyword_col = -1
     for ahead in range(body_end - 1, min(body_end + 2, n)):
         stripped = _strip_comments(source_lines[ahead])
         m = _ELSE_AFTER_BRACE_RE.search(stripped)
         if m:
             # The 'else' starts after the '}'
             else_keyword_line = ahead + 1
-            # Find 'else' within the match
-            else_pos = m.group().find('else')
-            else_keyword_col = m.start() + else_pos
             break
 
     if else_keyword_line < 0:
@@ -886,8 +882,6 @@ def find_else_chain_for_true_if(
             m = _ELSE_AFTER_BRACE_RE.search(scan_stripped)
             if m:
                 next_else_line = scan + 1
-                else_pos = m.group().find('else')
-                else_keyword_col = m.start() + else_pos
                 break
 
         else_keyword_line = next_else_line
@@ -904,6 +898,7 @@ def build_pruner_from_segments(
     segments: list,
     source_path: str,
     path_events: list[dict] | None = None,
+    source_lines: list[str] | None = None,
 ) -> StructuralPruner:
     """Build a :class:`StructuralPruner` from all FALSE-branch segments.
 
@@ -921,11 +916,11 @@ def build_pruner_from_segments(
     Returns:
         A configured ``StructuralPruner`` ready for ``prune_tree()``.
     """
-    path = Path(source_path)
-    if not path.exists():
-        return StructuralPruner()
-
-    source_lines = path.read_text().splitlines()
+    if source_lines is None:
+        path = Path(source_path)
+        if not path.exists():
+            return StructuralPruner()
+        source_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     pruner = StructuralPruner()
 
     # ── Track which if-lines we've already processed for else-chain ─────

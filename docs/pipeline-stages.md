@@ -71,7 +71,7 @@
 
 ## 1. 阶段一览
 
-**编排住在 `pipeline/`**（根目录的 `run_path_selection.py` 只是运行器：参数、`.env`、
+**编排住在 `pipeline/`**（根目录的 `run_pipeline.py` 只是运行器：参数、凭据加载、
 `main()`、以及给评测工具用的兼容再导出）。`process_report`（`pipeline/runner.py`）就是这张表本身
 ——十个阶段 = 十次调用 `_stageN_*`，每个适配器的函数体是原先那个大函数的对应行范围**逐字**搬入。
 下表的"代码位置"给到模块级：`runner.*` 是阶段适配器，其余是不随阶段变化的实现模块。
@@ -112,15 +112,34 @@
 `<path>::<finding>`），再由兼容层 `report_bridge` 渲染成各阶段一直在读的
 `ParsedReport` + `bug_path`；随后向上装配三份数据：
 
-- `pdg_<project>.json`（SDG，由 C++ PDG builder 产出）
+- A bounded Tree-sitter AST / PDG-Lite SDG covering the report's resolved
+  source files
+- `pdg_<project>.json` when available, as the exact Clang/LibTooling fallback
 - `cfg_cache/<project>/*.json`（按 `bug_file` 解析出入口函数对应的那份）
 - `source_root`（源码根）
 
-**关键约束（防静默错跑）**：源根与 PDG 都**必须显式可解析**。
+The default graph-selection rule is: use Tree-sitter when it covers the report
+entry location; otherwise fall back to an exact PDG. `--pdg` and
+`--no-lite-graph` force the exact backend. The syntax graph is built in an
+isolated worker with a timeout, so a native parser failure cannot terminate the
+main report process. Each project must provide its compilation database at
+`<project-root>/compile_commands.json`; `--compile-commands` may override that
+path. Reports that reference headers also need compilation entries for those
+headers.
+
+The configured source is translated into basic blocks before dependencies are
+computed. Branch targets, loop backedges, switch cases, break/continue, and
+unreachable statements are represented explicitly. Data dependencies use
+per-block reaching-definition `IN/OUT` fixed points, so mutually exclusive
+branch definitions remain distinct at a join instead of being serialized by
+source order.
+
+**关键约束（防静默错跑）**：源根必须可解析。
 `_resolve_paths` 只在推断出的根目录带有
 `deps/ lib/ src/ .git CMakeLists.txt Makefile meson.build configure setup.py` 之一时才接受它，
-否则**报错退出**并给出 `--project` / `--source-root` 的修法；`pdg_<project>.json` 缺失同样报错，
-版本也必须等于 `PDG_ARTIFACT_VERSION`。
+否则**报错退出**并给出 `--project` / `--source-root` 的修法。A missing exact
+PDG is allowed on the default Tree-sitter path; an explicitly supplied exact
+artifact is still validated against `PDG_ARTIFACT_VERSION`.
 历史事故：曾把无法解析的 faiss 报告静默换成 `project/aria2`，跑出一个"看起来合理"的错误结果。
 `main()` 在**第一次 LLM 调用之前**就预解析全部报告，误调用在秒级失败而不是几十分钟后的 ERROR 行。
 

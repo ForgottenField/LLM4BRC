@@ -36,7 +36,6 @@ from typing import Optional
 from fp_analysis.models import ParsedReport
 from report_frontend.code_model import (
     KNOWN_BUILD_PREFIXES,
-    STRONG_STRATEGIES,
     SourceCodeModel,
 )
 
@@ -381,22 +380,9 @@ class SourceContextExtractor:
                 local_path, parsed.metadata.bug_line
             )
 
-        # Strategy 2: Extract main source file from clang command in HTML
-        main_file = self._extract_main_file_from_html(parsed.raw_html_path)
-        if main_file:
-            local_path = self._resolve_to_local(main_file)
-            if local_path and local_path.exists():
-                return str(local_path), self._read_code_around(
-                    local_path, parsed.metadata.bug_line
-                )
-
-        # There was a third strategy here — a tree-wide ``rglob`` on the file's
-        # *name* — and it was the same weak claim the resolver now refuses:
-        # a report from ``/usr/include/fmt/`` would land on the first
-        # ``core.h`` anywhere in the tree.  The fallback below is strictly
-        # better than it was, because it is the report's own copy of the file
-        # (the revision the analyzer ran on, served by the code model) rather
-        # than a same-named file from this checkout.
+        # The report's embedded copy is the authoritative fallback.  Re-reading
+        # the HTML here duplicated the frontend parser and bypassed the
+        # report-scoped code model.
         logger.warning("Could not locate source file for: %s", bug_file)
         if parsed.source_snippets:
             return bug_file, parsed.source_snippets
@@ -415,94 +401,7 @@ class SourceContextExtractor:
         report's own embedded copy; the line-index path) are the ones that can
         still be right.  A wrong file cannot.
         """
-        resolved = self.model.resolve(file_path)
-        # The same gate as ``cfg_feasibility._resolve_local_path``, spelled the
-        # same way: two seams that answer the same question must not be able to
-        # disagree about what "resolved" means.
-        if resolved.local is not None and resolved.strategy in STRONG_STRATEGIES:
-            return resolved.local
-        return None
-
-    @staticmethod
-    def _extract_main_file_from_html(html_path: str | Path) -> Optional[str]:
-        """Extract the main analyzed source file from the clang command line."""
-        try:
-            html = Path(html_path).read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            return None
-
-        # Look in the spoiler div for the clang command
-        spoiler_match = re.search(
-            r'<div\s+class="spoiler"[^>]*>(.*?)</div>', html, re.DOTALL
-        )
-        if not spoiler_match:
-            return None
-
-        cmd = spoiler_match.group(1)
-        cmd = re.sub(r'<[^>]+>', ' ', cmd)
-
-        # Extract -main-file-name or the last positional argument (the source file)
-        mfn_match = re.search(r'-main-file-name\s+(\S+)', cmd)
-        if mfn_match:
-            return mfn_match.group(1)
-
-        # Look for the .cpp argument at the end (after -x c++ ... )
-        # The source file is typically the last argument before -o
-        parts = cmd.split()
-        for i, p in enumerate(parts):
-            if p.endswith((".cpp", ".cc", ".c", ".cxx")) and (
-                i == len(parts) - 1 or parts[i + 1] != "-o"
-            ):
-                return p
-
-        return None
-
-    def extract_call_chain(self, parsed: ParsedReport) -> dict[str, dict[int, str]]:
-        """Extract source code around each calling event's call site.
-
-        For every 'Calling' event in the path, resolves the source file and
-        reads a small window of code around the call site line number.
-        Falls back to companion files (e.g., -inl.h) when the line exceeds
-        the primary file's range.
-
-        Returns a dict keyed by ``call_site_L{line}_{function}`` → {line: code}.
-        """
-        self._bind(parsed)
-        additional: dict[str, dict[int, str]] = {}
-
-        for evt in parsed.path_events:
-            if not evt.get("is_calling_event"):
-                continue
-            line = evt.get("line_number", 0)
-            if not line:
-                continue
-
-            func_name = evt.get("called_function", "unknown")
-            file_path = evt.get("file_path", "") or parsed.metadata.bug_file
-
-            local_path = self._resolve_to_local(file_path)
-            if local_path and local_path.exists():
-                snippet = self._read_code_around(local_path, line, radius=10)
-                if snippet:
-                    key = f"call_site_L{line}_{func_name}"
-                    additional[key] = snippet
-                else:
-                    # Try companion files (line may be in -inl.h, .h, etc.)
-                    comp_snippet = self._read_from_companion(local_path, line, radius=10)
-                    if comp_snippet:
-                        key = f"call_site_L{line}_{func_name}"
-                        additional[key] = comp_snippet
-
-        return additional
-
-    def _read_from_companion(
-        self, primary_path: Path, line: int, radius: int = 10
-    ) -> dict[int, str]:
-        """Try to read code around *line* from companion files of *primary_path*."""
-        windows = self._companion_windows(primary_path, line, radius)
-        # ``_companion_windows`` yields in pattern order, so the first one is
-        # the first pattern that matched — the same file this used to pick.
-        return next(iter(windows.values()), {})
+        return self.model.resolve_strong(file_path)
 
     # ------------------------------------------------------------------
     # Callee bodies for the report's call steps
@@ -648,9 +547,9 @@ class SourceContextExtractor:
         # Call-site indicators: tokens that, when immediately before the
         # function name, mean this is a call, not a definition.
         call_site_prefix = re.compile(
-            rf"[\=\.,!&\(\)\-\+\*/%<>\[\]\|;:?~]"
-            rf"|->\s*$"
-            rf"|\.\s*$"
+            r"[\=\.,!&\(\)\-\+\*/%<>\[\]\|;:?~]"
+            r"|->\s*$"
+            r"|\.\s*$"
         )
 
         start_line_idx = None

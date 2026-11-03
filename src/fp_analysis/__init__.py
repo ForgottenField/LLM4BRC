@@ -19,15 +19,9 @@ from typing import Any
 
 from fp_analysis.models import (
     AnalysisResult,
-    Classification,
     CompletedPath,
     CompletedStep,
-    FPGap,
-    FPGapType,
-    GapSeverity,
-    POCPlan,
     ParsedReport,
-    PathAnalysis,
     ReportMetadata,
 )
 from fp_analysis.pdg_models import (
@@ -62,15 +56,9 @@ __all__ = [
     "FPAnalyzer",
     # Report / path models
     "AnalysisResult",
-    "Classification",
     "CompletedPath",
     "CompletedStep",
-    "FPGap",
-    "FPGapType",
-    "GapSeverity",
-    "POCPlan",
     "ParsedReport",
-    "PathAnalysis",
     "ReportMetadata",
     # PDG / slicing models
     "ControlDepEdge",

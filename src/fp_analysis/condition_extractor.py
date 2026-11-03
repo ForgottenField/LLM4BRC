@@ -15,9 +15,8 @@ Both return an :class:`ExtractedCondition` with confidence score (0.0–1.0).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -144,6 +143,13 @@ def extract_condition(
     except OSError:
         return ExtractedCondition(expression="", source_line=line, confidence=0.0)
 
+    return extract_condition_from_lines(lines, line)
+
+
+def extract_condition_from_lines(
+    lines: list[str], line: int,
+) -> ExtractedCondition:
+    """Extract a control-flow condition from already loaded source lines."""
     if line < 1 or line > len(lines):
         return ExtractedCondition(expression="", source_line=line, confidence=0.0)
 

@@ -63,10 +63,6 @@ _OPAQUE_MODIFIERS: frozenset[str] = frozenset({
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Regex: capture base variable from "&var.member..." or "var.member..."
-_RE_MEMBER_ACCESS = re.compile(
-    r"^(?:&\s*)?(\w[\w_]*)\s*\.\s*\w[\w_]*"
-)
 # Regex: capture base variable from "this->member"
 _RE_THIS_MEMBER = re.compile(
     r"this\s*->\s*(\w[\w_]*)"
@@ -88,58 +84,6 @@ def _collect_union_decls(fn_pdg: FunctionPDG) -> set[str]:
         if "union" in expr.lower() and node.variable:
             unions.add(node.variable)
     return unions
-
-
-def _collect_member_accesses(
-    fn_pdg: FunctionPDG,
-) -> dict[str, dict[str, list[tuple[str, bool]]]]:
-    """Map ``(base_var, member_path) → [(node_id, is_def)]``.
-
-    ``is_def=True`` means the node *writes to* the member (assignment target,
-    memcpy destination, etc.).  ``is_def=False`` means the node *reads* it.
-
-    Detects:
-    - ``var.member`` — struct/union member access
-    - ``&var.member`` — address-of member (memcpy destination)
-    - ``var.member.sub`` — nested member access
-    """
-    result: dict[str, dict[str, list[tuple[str, bool]]]] = {}
-
-    for nid, node in fn_pdg.nodes.items():
-        expr = node.expression or ""
-        base, member = _parse_base_member(expr)
-        if base and member:
-            is_def = _is_def_site(node, expr)
-            result.setdefault(base, {}).setdefault(member, []).append((nid, is_def))
-        # Also handle raw var access when var is a known union
-        # e.g. if var is a union and the expression uses just "var" as an arg
-    return result
-
-
-def _parse_base_member(expr: str) -> tuple[Optional[str], Optional[str]]:
-    """Extract ``(base_var, member)`` from a member-access expression.
-
-    Examples::
-
-        "ad.in.sin_addr.s_addr"  →  ("ad", "in")
-        "&ad.storage"             →  ("ad", "storage")
-        "ifa->ifa_addr"           →  ("ifa", "ifa_addr")
-        "this->bitfield_"         →  ("this", "bitfield_")  →  special
-    """
-    m = _RE_MEMBER_ACCESS.match(expr)
-    if m:
-        base = m.group(1)
-        # Skip numeric / constexpr bases like "1025"
-        if base.isdigit() or base.startswith("0x"):
-            return None, None
-        # Extract the first member name
-        rest = expr[m.end():]
-        next_member = rest.split(".")[0].split("->")[0].strip(" )];,")
-        return base, next_member if next_member else None
-    m2 = _RE_THIS_MEMBER.search(expr)
-    if m2:
-        return "this", m2.group(1)
-    return None, None
 
 
 def _is_def_site(node: PDGNode, expr: str) -> bool:

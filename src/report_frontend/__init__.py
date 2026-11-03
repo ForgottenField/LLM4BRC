@@ -9,7 +9,7 @@ what was actually done for the CodeQL findings (see
 
 This package is the seam.  It has three layers, each replaceable on its own:
 
-``models``
+``report_model``
     The canonical model of a *report*: :class:`BugFinding` (what was claimed),
     :class:`TraceStep` (how the analyzer got there), :class:`SourceLocation`
     (where).  Nothing analyzer-specific, nothing parsed from prose.
@@ -53,7 +53,13 @@ from .errors import (
     ReportParseError,
     UnsupportedReportFormat,
 )
-from .frontend import LoadedReport, ReportFrontend, ReportRef, load_report
+from .frontend import (
+    LoadedReport,
+    ReportFrontend,
+    ReportRef,
+    clear_document_cache,
+    load_report,
+)
 from .report_model import (
     FRONTEND_MODEL_VERSION,
     AnalyzerKind,
@@ -94,6 +100,7 @@ __all__ = [
     "TraceStep",
     "UnsupportedReportFormat",
     "clear_index_cache",
+    "clear_document_cache",
     "detect_adapter",
     "get_adapter",
     "load_report",

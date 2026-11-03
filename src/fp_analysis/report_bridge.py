@@ -186,9 +186,13 @@ def source_snippets(loaded: LoadedReport) -> dict[int, str]:
     return {}
 
 
-def to_parsed_report(loaded: LoadedReport) -> ParsedReport:
+def to_parsed_report(
+    loaded: LoadedReport, snippets: dict[int, str] | None = None,
+) -> ParsedReport:
     """Render a loaded finding as the pipeline's ``ParsedReport``."""
     finding = loaded.finding
+    if snippets is None:
+        snippets = source_snippets(loaded)
     events = [
         _step_to_event(step, fallback_file=finding.location.file)
         for step in finding.steps
@@ -213,7 +217,7 @@ def to_parsed_report(loaded: LoadedReport) -> ParsedReport:
     return ParsedReport(
         metadata=metadata,
         path_events=events,
-        source_snippets=source_snippets(loaded),
+        source_snippets=snippets,
         raw_html_path=str(loaded.ref.path),
         error_start_event=_error_start_event(events),
         calling_events=_calling_events(events),
@@ -226,28 +230,27 @@ def to_parsed_report(loaded: LoadedReport) -> ParsedReport:
 
 
 
-def to_bug_path(loaded: LoadedReport) -> BugPath:
+def to_bug_path(
+    loaded: LoadedReport, snippets: dict[int, str] | None = None,
+) -> BugPath:
     """Render a loaded finding as the CSA-shaped ``BugPath``."""
     finding = loaded.finding
-    snippets = source_snippets(loaded)
+    if snippets is None:
+        snippets = source_snippets(loaded)
     events: list[PathEvent] = []
     for step in finding.steps:
-        if step.kind is StepKind.REPORT:
-            kind = EventKind.REPORT
-        elif step.kind is StepKind.CONTROL:
-            kind = EventKind.CONTROL
-        else:
-            kind = EventKind.EVENT
         line = step.location.line
         events.append(
             PathEvent(
-                event_kind=kind,
+                event_kind=EventKind(step.kind.value),
                 file_path=step.location.file or finding.location.file,
                 line_number=int(line or 0),
                 column_number=step.location.column or None,
                 description=step.message,
                 code_snippet=snippets.get(int(line)) if line else None,
                 branch_condition=_step_branch_condition(step),
+                callee=step.callee or None,
+                assumption=step.assumption,
             )
         )
 
@@ -279,7 +282,11 @@ def to_bug_path(loaded: LoadedReport) -> BugPath:
 
 def to_legacy(loaded: LoadedReport) -> tuple[ParsedReport, BugPath]:
     """Both legacy views at once — what stage 1 of the pipeline consumes."""
-    return to_parsed_report(loaded), to_bug_path(loaded)
+    snippets = source_snippets(loaded)
+    return (
+        to_parsed_report(loaded, snippets),
+        to_bug_path(loaded, snippets),
+    )
 
 
 __all__ = [

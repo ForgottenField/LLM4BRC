@@ -1,19 +1,9 @@
-"""Tests for CFG parser: text parsing, path enumeration, and models."""
+"""Tests for CFG parser text parsing."""
 
 from __future__ import annotations
 
-import pytest
-
-from fp_analysis.cfg_models import (
-    BranchDecision,
-    CFGBlock,
-    CFGFunction,
-    CFGPathVariant,
-)
-from fp_analysis.cfg_parser import (
-    enumerate_paths,
-    parse_cfg_text,
-)
+from fp_analysis.cfg_models import CFGBlock
+from fp_analysis.cfg_parser import parse_cfg_text
 
 # ---------------------------------------------------------------------------
 # Fixtures: hardcoded CFG dump text
@@ -242,113 +232,3 @@ class TestCFGBlock:
         assert block.terminator == "if [B3.3]"
         assert block.predecessors == ["B4"]
         assert block.successors == ["B2", "B1"]
-
-
-# ---------------------------------------------------------------------------
-# Tests: enumerate_paths
-# ---------------------------------------------------------------------------
-
-
-class TestEnumeratePaths:
-    def test_linear_no_branches(self):
-        """Linear function produces exactly 1 path."""
-        cfgs = parse_cfg_text(CFG_LINEAR)
-        cfg = cfgs["int no_branches()"]
-        variants = enumerate_paths(cfg)
-        assert len(variants) == 1
-        v = variants[0]
-        assert v.is_original_path  # first variant is marked original
-        assert len(v.branch_decisions) == 0  # no branches
-
-    def test_if_else_two_paths(self):
-        """If-else produces exactly 2 paths."""
-        cfgs = parse_cfg_text(CFG_IF_ELSE)
-        cfg = cfgs["int test(int x)"]
-        variants = enumerate_paths(cfg)
-        assert len(variants) == 2
-        # Variants should have different branch decisions
-        assert len(variants[0].branch_decisions) == 1
-        assert len(variants[1].branch_decisions) == 1
-        # One goes true, one goes false
-        taken = [v.branch_decisions[0].taken_is_true_branch for v in variants]
-        assert True in taken
-        assert False in taken
-
-    def test_nested_if_four_paths(self):
-        """Nested if produces at least the 4 basic paths (back edges add more)."""
-        cfgs = parse_cfg_text(CFG_NESTED_IF)
-        cfg = cfgs["int nested(int a, int b)"]
-        variants = enumerate_paths(cfg, max_variants=8)
-        # 2 (outer) * 2 (inner) = 4 basic paths; back-edge from inner to
-        # outer (B3 → B4) creates additional loop paths
-        assert len(variants) >= 4
-        for v in variants[:4]:
-            assert len(v.branch_decisions) >= 1
-            assert v.block_sequence  # should have blocks
-
-    def test_path_blocks_trace_through_cfg(self):
-        """Each variant's block_sequence should be a valid path through the CFG."""
-        cfgs = parse_cfg_text(CFG_IF_ELSE)
-        cfg = cfgs["int test(int x)"]
-        variants = enumerate_paths(cfg)
-        for v in variants:
-            # Every successive pair of blocks should have an edge in the CFG
-            seq = v.block_sequence
-            for i in range(len(seq) - 1):
-                src = seq[i]
-                dst = seq[i + 1]
-                assert src in cfg.blocks
-                assert dst in cfg.blocks[src].successors, (
-                    f"Block {src} does not have successor {dst}"
-                )
-
-    def test_loop_detection(self):
-        """Loops are detected and paths don't explode."""
-        cfgs = parse_cfg_text(CFG_WITH_LOOP)
-        cfg = cfgs["int loop(int n)"]
-        # Without loop detection this would explode; with detection should be bounded
-        variants = enumerate_paths(cfg, max_variants=8)
-        assert len(variants) <= 8
-
-    def test_max_variants_cap(self):
-        """max_variants cap limits the number of paths."""
-        cfgs = parse_cfg_text(CFG_NESTED_IF)
-        cfg = cfgs["int nested(int a, int b)"]
-        variants = enumerate_paths(cfg, max_variants=2)
-        assert len(variants) == 2
-
-    def test_empty_cfg(self):
-        """Empty CFG produces empty list."""
-        cfg = CFGFunction(function_name="empty", blocks={})
-        assert enumerate_paths(cfg) == []
-
-    def test_no_blocks(self):
-        """CFG with blocks but no entry produces empty list."""
-        cfg = CFGFunction(
-            function_name="no_entry",
-            blocks={"B1": CFGBlock(block_id="B1")},
-            entry_block_id="",
-        )
-        assert enumerate_paths(cfg) == []
-
-
-class TestBranchDecision:
-    """Sanity checks on BranchDecision and CFGPathVariant models."""
-
-    def test_minimal_branch_decision(self):
-        bd = BranchDecision(
-            block_id="B3",
-            terminator_text="if [B3.4]",
-            taken_successor="B2",
-            alternative_successor="B1",
-        )
-        assert bd.block_id == "B3"
-        assert bd.taken_is_true_branch  # first succ is true by default
-        assert bd.source_line == 0
-
-    def test_path_variant_with_decisions(self):
-        v = CFGPathVariant(variant_id=0, is_original_path=True)
-        assert v.variant_id == 0
-        assert v.is_original_path
-        assert v.branch_decisions == []
-        assert v.block_sequence == []

@@ -194,6 +194,20 @@ class TestReading:
         lines = model.snippet("faiss/utils/AlignedTable.h", 10, radius=1)
         assert lines[10] == "// from the report"
 
+    def test_embedded_file_aliases_share_one_canonical_key(
+        self, model, source_tree: Path,
+    ) -> None:
+        local = (source_tree / "faiss" / "utils" / "AlignedTable.h").resolve()
+
+        model.add_embedded(
+            "faiss/utils/AlignedTable.h", {10: "// from the report"},
+        )
+
+        assert model.has_embedded(str(local))
+        assert model.snippet(str(local), 10, radius=0) == {
+            10: "// from the report",
+        }
+
     def test_snippet_clamps_at_the_file_boundaries(self, model) -> None:
         lines = model.snippet("faiss/utils/AlignedTable.h", 1, radius=30)
         assert min(lines) == 1

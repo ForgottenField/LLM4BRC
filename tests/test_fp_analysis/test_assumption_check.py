@@ -11,7 +11,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from fp_analysis.cfg_feasibility import extract_assumptions_from_events
 from fp_analysis.cfg_models import AssumptionFact
 from fp_analysis.path_analyzer import FPAnalyzer
 

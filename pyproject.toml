@@ -11,6 +11,9 @@ requires-python = ">=3.13"
 dependencies = [
   "openai>=1.0,<3",
   "pydantic>=2,<3",
+  "tree-sitter>=0.25,<0.27",
+  "tree-sitter-c>=0.23,<0.25",
+  "tree-sitter-cpp>=0.23,<0.24",
 ]
 
 [project.optional-dependencies]
@@ -18,6 +21,7 @@ claude = ["anthropic>=0.40"]
 dev = [
   "anthropic>=0.40",
   "pytest>=8",
+  "ruff>=0.17",
 ]
 
 [tool.setuptools.packages.find]
@@ -28,8 +32,12 @@ include = [
   "llm_client*",
   "pipeline*",
   "report_frontend*",
+  "tree_sitter_backend*",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+select = ["F"]

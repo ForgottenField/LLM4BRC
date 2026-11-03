@@ -15,6 +15,7 @@ from fp_analysis.cfg_branch_models import (
     Postcondition,
 )
 from fp_analysis.cfg_models import AnchorEvent, SegmentInfo
+from fp_analysis.slice_mask import SliceMask
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -271,7 +272,6 @@ class TestStep34Integration:
             CFGBranchTree,
             Postcondition,
         )
-        from fp_analysis.slice_mask import SliceMask
 
         # Build a tree with a contradictory node
         pc = Postcondition("f", 10, "r >= 0", True)

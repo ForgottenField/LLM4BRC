@@ -403,7 +403,7 @@ class BugFinding:
         return self.path_evidence is PathEvidence.TRACE
 
     @property
-    def error_start(self) -> Optional[StepKind]:
+    def error_start(self) -> Optional[TraceStep]:
         """The step where the flagged value/state originates, if reported."""
         for step in self.steps:
             if step.kind is StepKind.ERROR_START:
@@ -413,14 +413,14 @@ class BugFinding:
     @property
     def calls(self) -> list[TraceStep]:
         """Every ``Calling …`` step, in path order."""
-        return [s for s in self.steps if s.kind is TraceStep.CALL]
+        return [s for s in self.steps if s.kind is StepKind.CALL]
 
     @property
     def call_chain(self) -> list[str]:
         """Callee names in call order (``error_start``-independent)."""
         return [s.callee for s in self.calls if s.callee]
 
-    def steps_of(self, *kinds: StepKind) -> list[StepKind]:
+    def steps_of(self, *kinds: StepKind) -> list[TraceStep]:
         wanted = set(kinds)
         return [s for s in self.steps if s.kind in wanted]
 
@@ -453,6 +453,7 @@ class BugFinding:
             "reported_path_length": self.reported_path_length,
             "related": [r.to_dict() for r in self.related],
             "fingerprint": self.fingerprint,
+            "raw": dict(self.raw),
         }
 
     @classmethod
@@ -551,6 +552,7 @@ class ReportModel:
             "tool_version": self.tool_version,
             "source_root_hint": self.source_root_hint,
             "findings": [f.to_dict() for f in self.findings],
+            "metadata": dict(self.metadata),
         }
 
     @classmethod

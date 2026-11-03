@@ -97,7 +97,7 @@ class _FakeAnalyzer:
     last: "_FakeAnalyzer | None" = None
 
     def __init__(self, llm_config=None, model="fake-model", source_root="",
-                 pdg_path="", report_format=None):
+                 pdg_path="", report_format=None, sdg=None):
         self._model = model
         self.source_root = source_root
         self._domain_facts_text = "<unset>"
@@ -114,6 +114,13 @@ class _FakeAnalyzer:
 
     def set_domain_facts_text(self, text):
         self._domain_facts_text = text
+
+    @property
+    def lite_evidence(self):
+        return getattr(self, "_lite_evidence", "")
+
+    def set_lite_evidence(self, text):
+        self._lite_evidence = text
 
     def extract_class_names_from_path(self, parsed):
         return self._extract_class_names_from_path(parsed)
@@ -281,6 +288,7 @@ def run(monkeypatch, tmp_path: Path):
             report_format=None, output=str(out_dir / "path_selection_report-x.json"),
             path_space=False,
             max_path_attempts=3, max_reports=None, batch_summary=None,
+            api_key="test-key-not-used", api_key_file=None,
         )
         if semantic_reason is not None:
             analyzer_ctor = _FakeAnalyzer.__init__
@@ -392,7 +400,7 @@ class TestFullRun:
             "slice_relevance", "context_insensitive",
             "total_elapsed_sec", "verification_status", "verification_flipped_to_fp",
             "project", "verdict", "verdict_step", "verdict_reason", "verdict_steps",
-            "path_space", "code_model",
+            "path_space", "code_model", "lite_graph",
         }
         # The five keys the eval tooling reads by name.
         ps = output["path_selection"]

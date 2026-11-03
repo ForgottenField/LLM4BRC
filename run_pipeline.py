@@ -12,7 +12,7 @@ Everything runs by default — there are no mode switches to pass:
 
 **This file is only the runner.**  The implementation lives in
 ``pipeline`` (see that package's ``__init__`` for the
-layer map); this module parses the arguments, loads ``.env``, configures
+layer map); this module parses the arguments, loads API credentials, configures
 logging, resolves every work item up front so a misinvocation fails in seconds,
 and hands the list to the batch driver.  The compatibility block below
 re-exports the names the harness tools (``tools/``) and the CLI tests import
@@ -27,25 +27,15 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-# Load .env for DEEPSEEK_API_KEY
 _HERE = Path(__file__).resolve().parent
-_env_path = _HERE / ".env"
-if _env_path.exists():
-    with open(_env_path) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                k = k.strip()
-                v = v.strip().strip('"').strip("'")
-                os.environ.setdefault(k, v)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,6 +63,7 @@ from fp_analysis.cfg_cache_set import CFGCacheSet  # noqa: F401
 from fp_analysis.cfg_feasibility import resolve_source_file_for_cfg  # noqa: F401
 from fp_analysis.path_seed_extractor import build_dense_path_annotations  # noqa: F401
 from llm_client.config import PROVIDER_SPECS, provider_spec
+from llm_client.credentials import DEFAULT_API_KEY_FILE, load_api_key
 from report_frontend import ReportFrontend, ReportRef  # noqa: F401
 from report_frontend.adapters.base import describe_adapters_table
 
@@ -107,6 +98,12 @@ from pipeline import (  # noqa: F401
     run_branch_filter,
     segment_path,
 )
+from pipeline.results import (
+    capture_console,
+    configure_results_args,
+    create_results_layout,
+    write_manifest,
+)
 
 # Legacy underscore-prefixed names remain available for evaluation scripts.
 # They are aliases, not wrappers, so there is still one implementation.
@@ -139,7 +136,12 @@ def main():
                              f"(default: {DEFAULT_PROJECTS_DIR})")
     parser.add_argument("--source-root", default=None,
                         help="Explicit source root (overrides --project inference)")
-    parser.add_argument("--pdg", default=None, help="Path to PDG JSON file")
+    parser.add_argument(
+        "--pdg",
+        default=None,
+        help="Path to an exact PDG JSON file; supplying it selects the exact "
+             "backend.",
+    )
     parser.add_argument("--cfg-cache", default=None, help="Path to CFG cache JSON file")
     parser.add_argument("--max-path-attempts", type=int, default=3,
                         help="Path-traversal threshold: max candidate paths to explore "
@@ -177,6 +179,22 @@ def main():
                         help="Provider model override; defaults are provider-specific.")
     parser.add_argument("--llm-timeout", type=float, default=120.0,
                         help="Per-request LLM timeout in seconds (default: 120).")
+    parser.add_argument("--results-root", default=None,
+                        help="Root for timestamped run outputs (default: ./results).")
+    parser.add_argument("--api-key-file", default=str(DEFAULT_API_KEY_FILE),
+                        help="JSON credential file (default: config/api_key.json).")
+    parser.add_argument("--no-lite-graph", action="store_true",
+                        help="Disable the Tree-sitter fast path and require an "
+                             "exact Clang/PDG artifact.")
+    parser.add_argument("--lite-graph-timeout", type=float, default=30.0,
+                        help="Timeout in seconds for one isolated Tree-sitter "
+                             "graph build (default: 30).")
+    parser.add_argument(
+        "--compile-commands",
+        default=None,
+        help="Compilation database for Tree-sitter preprocessing. Defaults to "
+             "<source-root>/compile_commands.json.",
+    )
     args = parser.parse_args()
 
     if args.list_formats:
@@ -200,14 +218,6 @@ def main():
                 print(f"      {finding.message.splitlines()[0][:160]}")
         sys.exit(0)
 
-    # Check the selected provider's API key before collecting or analysing work.
-    spec = provider_spec(args.provider)
-    api_key = os.environ.get(spec.api_key_env, "")
-    if not api_key:
-        print(f"❌ {spec.api_key_env} not set in .env or the environment")
-        sys.exit(1)
-    logger.info("Using LLM provider: %s", spec.name)
-
     reports = collect_reports(args)
     if args.max_reports:
         reports = reports[: args.max_reports]
@@ -215,20 +225,150 @@ def main():
         print("No reports found to process.", file=sys.stderr)
         sys.exit(1)
 
+    project_hint = _project_hint(args, reports)
+    layout = create_results_layout(args.results_root, project_hint)
+    configure_results_args(args, layout)
+    started_at = datetime.now(timezone.utc)
+    manifest = {
+        "run_id": layout.run_id,
+        "started_at_utc": started_at.isoformat(),
+        "status": "running",
+        "project": project_hint,
+        "provider": args.provider,
+        "model": args.model or provider_spec(args.provider).default_model,
+        "report_count": len(reports),
+        "reports": [ref.key for ref in reports],
+        "results": {
+            "project_dir": str(layout.project_dir),
+            "reports_dir": str(layout.reports_dir),
+            "pocs_dir": str(layout.pocs_dir),
+            "batch_summary": str(args.batch_summary),
+            "log": str(layout.log_path),
+        },
+    }
+    write_manifest(layout, manifest)
+
+    spec = provider_spec(args.provider)
+    try:
+        api_key = load_api_key(args.provider, args.api_key_file)
+    except Exception as exc:
+        manifest.update({
+            "status": "blocked",
+            "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+            "error": str(exc),
+        })
+        write_manifest(layout, manifest)
+        print(
+            f"❌ {exc}; "
+            f"run metadata saved to {layout.manifest_path}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    args.api_key = api_key
+    logger.info("Using LLM provider: %s", spec.name)
+
     # Fail fast: resolve every report's source root / PDG *before* the first LLM
     # call.  Otherwise a misinvocation is either silently analysed against the
     # wrong project (the removed fallback) or reported as a per-report ERROR row
     # only after tens of minutes of unrelated work.
+    source_roots: set[Path] = set()
     for rp in reports:
         try:
-            _, _, pdg_path, source_root = resolve_paths(args, rp)
+            _, _, pdg_path, source_root = resolve_paths(
+                args, rp, require_pdg=args.no_lite_graph,
+            )
         except (ValueError, FileNotFoundError) as e:
+            manifest.update({
+                "status": "preflight_failed",
+                "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+                "error": str(e),
+            })
+            write_manifest(layout, manifest)
             print(f"❌ {rp.key}: {e}", file=sys.stderr)
             sys.exit(2)
-        logger.info("Resolved %s → source_root=%s | pdg=%s",
-                    rp.key, source_root, pdg_path.name)
+        source_roots.add(source_root)
+        logger.info(
+            "Resolved %s → source_root=%s | exact_pdg=%s",
+            rp.key, source_root, pdg_path.name if pdg_path else "not required",
+        )
 
-    run_batch(args, reports)
+    compile_db_paths: set[Path] = set()
+    if not args.no_lite_graph and not args.pdg:
+        for source_root in source_roots:
+            database = (
+                Path(args.compile_commands).expanduser().resolve()
+                if args.compile_commands
+                else source_root / "compile_commands.json"
+            )
+            if not database.is_file():
+                message = (
+                    f"compile database not found: {database}. Place it at "
+                    "<project-root>/compile_commands.json or pass "
+                    "--compile-commands <path>."
+                )
+                manifest.update({
+                    "status": "preflight_failed",
+                    "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "error": message,
+                })
+                write_manifest(layout, manifest)
+                print(f"❌ {message}", file=sys.stderr)
+                sys.exit(2)
+            compile_db_paths.add(database)
+
+    actual_project = (
+        next(iter(source_roots)).name if len(source_roots) == 1 else "mixed"
+    )
+    manifest.update({
+        "project": actual_project,
+        "source_roots": sorted(str(path) for path in source_roots),
+        "exact_pdg": str(pdg_path) if pdg_path else None,
+        "graph_strategy": "exact" if args.no_lite_graph else "tree-sitter-first",
+        "compile_commands": sorted(str(path) for path in compile_db_paths),
+    })
+    write_manifest(layout, manifest)
+
+    root_logger = logging.getLogger()
+    file_handler = logging.FileHandler(layout.log_path, encoding="utf-8")
+    file_handler.setFormatter(
+        logging.Formatter("%(levelname)-5s %(name)s: %(message)s")
+    )
+    root_logger.addHandler(file_handler)
+    try:
+        with capture_console(layout.log_path):
+            summary = run_batch(args, reports)
+        manifest.update({
+            "status": "completed",
+            "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+            "elapsed_sec": round(time.time() - started_at.timestamp(), 1),
+            "summary": {
+                key: summary[key]
+                for key in ("total", "tp", "fp", "unknown", "error")
+            },
+        })
+    except BaseException as exc:
+        manifest.update({
+            "status": "failed",
+            "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+            "elapsed_sec": round(time.time() - started_at.timestamp(), 1),
+            "error": str(exc),
+        })
+        raise
+    finally:
+        root_logger.removeHandler(file_handler)
+        file_handler.close()
+        write_manifest(layout, manifest)
+
+
+def _project_hint(args, reports) -> str:
+    for value in (getattr(args, "project", None), getattr(args, "source_root", None)):
+        if value:
+            return Path(str(value)).name
+    if getattr(args, "scan_dir", None):
+        return Path(args.scan_dir).name
+    if reports:
+        return reports[0].path.parent.name
+    return "unknown"
 
 
 if __name__ == "__main__":

@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from fp_analysis.html_parser import FPReportParser
-from fp_analysis.models import ParsedReport
 
 
 class TestFPReportParser:

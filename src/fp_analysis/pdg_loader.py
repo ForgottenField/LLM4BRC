@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Optional
 
 from fp_analysis.pdg_augment import augment_pdg_sdg
 from fp_analysis.pdg_models import (
@@ -220,37 +219,3 @@ def build_sdg(
 # ---------------------------------------------------------------------------
 # Convenience: load both PDG and call graph from file paths
 # ---------------------------------------------------------------------------
-
-
-def load_sdg_from_files(
-    pdg_path: str | Path,
-    callgraph_path: str | Path,
-    augment: bool = True,
-) -> Optional[SDG]:
-    """Load a complete SDG from PDG and call graph JSON files.
-
-    This is a convenience wrapper that:
-    1. Loads the call graph via ``CallGraph.from_json()``
-    2. Loads PDG data via :func:`load_pdg`
-    3. Applies augmentation (default) and returns the linked :class:`SDG`
-
-    Returns ``None`` if either file cannot be loaded.
-    """
-    from csa_analysis.callgraph_models import CallGraph
-
-    cg_path = Path(callgraph_path)
-    if not cg_path.exists():
-        logger.warning("Call graph file not found: %s", cg_path)
-        return None
-
-    try:
-        callgraph = CallGraph.from_json(str(cg_path))
-    except Exception as exc:
-        logger.warning("Failed to load call graph from %s: %s", cg_path, exc)
-        return None
-
-    pdgs = load_pdg(pdg_path)
-    if not pdgs:
-        return None
-
-    return build_sdg(pdgs, callgraph, augment=augment)

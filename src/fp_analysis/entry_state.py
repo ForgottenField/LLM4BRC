@@ -71,7 +71,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from fp_analysis.models import code_model_of
-from report_frontend.code_model import STRONG_STRATEGIES
 
 logger = logging.getLogger(__name__)
 
@@ -348,10 +347,7 @@ def _resolve_local(file_path: str, model) -> Path | None:
     """
     if not file_path:
         return None
-    hit = model.resolve(file_path)
-    if hit.local is not None and hit.strategy in STRONG_STRATEGIES:
-        return hit.local
-    return None
+    return model.resolve_strong(file_path)
 
 
 def _read_lines(model, path: Path) -> list[str] | None:

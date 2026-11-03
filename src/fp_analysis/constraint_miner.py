@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Optional
 
 from fp_analysis.constraint_models import (
     ConfigFlagInfo,
@@ -116,7 +115,6 @@ def scan_constructor_invariants(file_path: Path) -> list[FieldInvariant]:
             field = cm.group(2)
             cond = cm.group(1)
             new_val = cm.group(3)
-            else_val = cm.group(4)
             invariants.append(FieldInvariant(
                 class_name=class_name,
                 field_name=f"{field}_",

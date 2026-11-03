@@ -26,11 +26,13 @@ the old code did, and the reason it is a parameter rather than a fresh
 
 from __future__ import annotations
 
-import os
+import inspect
 import time
+from pathlib import Path
 
 from llm_client.base import LLMConfig
 from llm_client.config import provider_spec
+from llm_client.credentials import load_api_key
 from fp_analysis.branch_relevance import (
     classify_branch_relevance,
     reduce_path_space,
@@ -62,6 +64,7 @@ from pipeline.exploration import (
     _run_path_attempts,
 )
 from pipeline.layout import DEFAULT_PROJECTS_DIR, get_logger
+from pipeline.lite_graph import build_lite_graph
 from pipeline.models import (
     AssembledProject,
     ExplorationState,
@@ -107,9 +110,12 @@ def _print_run_banner(args, report_ref, source_root, pdg_path, cfg_cache_path) -
           + (f"\nFinding:     {report_ref.selector}" if report_ref.selector else ""))
     print(f"Project:     {source_root}      ← 项目源树（报告/源在此）")
     print(f"  └ projects-dir: {args.projects_dir}")
-    print(f"PDG:         {pdg_path}")
+    print(f"PDG:         {pdg_path or 'not present'}")
+    print("Graph mode:  "
+          + ("exact (forced)" if getattr(args, "no_lite_graph", False)
+             else "Tree-sitter fast path; exact PDG fallback"))
     print(f"CFG Cache:   {cfg_cache_path}")
-    print(f"Algorithm:   conflict-driven path selection + POC verification")
+    print("Algorithm:   conflict-driven path selection + POC verification")
     print(f"  (项目源+报告默认在 {DEFAULT_PROJECTS_DIR}/<name>/；"
           f"pdg/cfg 缓存在仓库根 pdg_<name>.json + cfg_cache/<name>/ 下)")
     print()
@@ -145,8 +151,16 @@ def _stage1_parse(args, report_ref, source_root) -> Stage1Parse:
     return Stage1Parse(parsed_report, bug_path, loaded, entry_fn)
 
 
-def _stage1_assemble(source_root, cfg_cache_path, pdg_path, parsed_report) -> AssembledProject:
-    """Stage 1b: the CFG cache view and the SDG for the project."""
+def _stage1_assemble(
+    source_root,
+    cfg_cache_path,
+    pdg_path,
+    parsed_report,
+    *,
+    lite_graph=None,
+    prefer_exact: bool = False,
+) -> AssembledProject:
+    """Stage 1b: select the graph backend and load the available CFG cache."""
     # ── Stage 1 (cont.): load the SDG + the CFG cache ──
     # The CFG cache is per translation unit, so start from the bug host's own
     # cache and pull in the rest on demand once segmentation reveals which
@@ -166,10 +180,67 @@ def _stage1_assemble(source_root, cfg_cache_path, pdg_path, parsed_report) -> As
                 bug_source, source_root.name,
             )
     cfg_cache = cache_set.as_dict()
-    sdg = load_sdg(pdg_path)
-    print(f"{stage_label(1)}: Loaded CFG ({len(cfg_cache)} fn) + SDG ({len(sdg.pdgs)} fn) "
-          f"[{time.time()-t0:.1f}s]")
-    return AssembledProject(cache_set, cfg_cache, sdg)
+    use_lite = (
+        not prefer_exact
+        and lite_graph is not None
+        and lite_graph.available
+        and (
+            _lite_covers_report(lite_graph, parsed_report)
+            or pdg_path is None
+        )
+    )
+    if use_lite:
+        sdg = lite_graph.sdg
+        graph_backend = "tree-sitter"
+    elif pdg_path is not None:
+        sdg = load_sdg(pdg_path)
+        graph_backend = "exact"
+    else:
+        detail = getattr(lite_graph, "error", "") if lite_graph is not None else ""
+        raise RuntimeError(
+            "No analysis graph is available: Tree-sitter produced no usable "
+            "graph"
+            + (f" ({detail})" if detail else "")
+            + " and no exact PDG artifact exists. Pass --pdg to use the exact "
+              "fallback."
+        )
+    if lite_graph is not None:
+        lite_graph.summary["selected_backend"] = graph_backend
+        lite_graph.summary["exact_fallback_available"] = pdg_path is not None
+    print(
+        f"{stage_label(1)}: Loaded CFG ({len(cfg_cache)} fn) + "
+        f"{graph_backend} SDG ({len(sdg.pdgs)} fn) "
+        f"[{time.time()-t0:.1f}s]"
+    )
+    return AssembledProject(cache_set, cfg_cache, sdg, graph_backend)
+
+
+def _lite_covers_report(lite_graph, parsed_report) -> bool:
+    """Whether the bounded syntax graph covers the report entry location."""
+    if lite_graph is None or not lite_graph.available:
+        return False
+    function_name = getattr(
+        getattr(parsed_report, "metadata", None), "function_name", "",
+    )
+    if function_name and lite_graph.sdg.get_pdg(function_name) is not None:
+        return True
+    bug_file = getattr(
+        getattr(parsed_report, "metadata", None), "bug_file", "",
+    )
+    bug_line = int(getattr(
+        getattr(parsed_report, "metadata", None), "bug_line", 0,
+    ) or 0)
+    bug_name = Path(bug_file).name if bug_file else ""
+    if not bug_name:
+        return False
+    for pdg in lite_graph.sdg.pdgs.values():
+        if Path(pdg.source_file or "").name != bug_name:
+            continue
+        if not bug_line or any(
+            node.source_line == bug_line for node in pdg.nodes.values()
+        ):
+            return True
+    return False
 
 
 def _stage1_resolve_entry(entry_fn, sdg, parsed_report) -> str:
@@ -253,7 +324,9 @@ def _stage3_slice(sdg, parsed_report, bug_path, source_root, t0) -> Stage3Slice:
     return Stage3Slice(file_index, slice_mask, slice_result, path_annotations)
 
 
-def _build_analyzer(args, source_root, pdg_path, t0) -> FPAnalyzer:
+def _build_analyzer(
+    args, source_root, pdg_path, t0, sdg=None, lite_graph=None,
+) -> FPAnalyzer:
     """The LLM provider and the analyzer — infrastructure for stages 4 and 9.
 
     Built here, *before* the branch filter, so the assumption-derived state can
@@ -265,7 +338,9 @@ def _build_analyzer(args, source_root, pdg_path, t0) -> FPAnalyzer:
     # can feed into conflict checking (Layers 1b/1.5), which previously never
     # received any established_state and therefore pruned nothing.
     spec = provider_spec(getattr(args, "provider", "deepseek"))
-    api_key = os.environ[spec.api_key_env]
+    api_key = getattr(args, "api_key", "") or load_api_key(
+        spec.name, getattr(args, "api_key_file", None),
+    )
     model = getattr(args, "model", None) or spec.default_model
     config = LLMConfig(
         provider_name=spec.name,
@@ -278,9 +353,12 @@ def _build_analyzer(args, source_root, pdg_path, t0) -> FPAnalyzer:
         llm_config=config,
         model=model,
         source_root=str(source_root),
-        pdg_path=str(pdg_path),
+        pdg_path=str(pdg_path) if pdg_path is not None else None,
         report_format=getattr(args, "report_format", None),
+        sdg=sdg,
     )
+    if lite_graph is not None and lite_graph.prompt_text:
+        analyzer.set_lite_evidence(lite_graph.prompt_text)
     print(f"  FPAnalyzer ready (model={analyzer.model_name}) [{time.time()-t0:.1f}s]")
     return analyzer
 
@@ -342,7 +420,7 @@ def _stage5_branch_filter(segments, parsed_report, cfg_cache, sdg, slice_mask,
 
 
 def _stage6_gate(args, report_ref, segments, parsed_report, source_root, entry_fn,
-                 t0, total_start) -> ResultDocument | None:
+                 t0, total_start, lite_graph=None) -> ResultDocument | None:
     """Stage 6: the two deterministic FP gates, sharing one exit.
 
     Returns the result JSON when a gate fired, ``None`` otherwise.  ``t0`` is
@@ -493,6 +571,9 @@ def _stage6_gate(args, report_ref, segments, parsed_report, source_root, entry_f
             else stage_step(6, "（入口状态制造：穿过必然终止的检查）")
         )
         _output["code_model"] = code_model_report(parsed_report, source_root)
+        _output["lite_graph"] = (
+            lite_graph.to_dict() if lite_graph is not None else None
+        )
         _write_output(_out, _output, total_start)
         return _output
 
@@ -516,7 +597,7 @@ def _stage7_preamble(cumulative_state) -> list[str]:
 
 
 def _stage7_supplement(analyzer, segments, parsed_report, sdg, slice_mask,
-                       extra_preconditions) -> None:
+                       extra_preconditions, lite_graph=None) -> None:
     """Stage 7 (advisory): guard-pinned / finite-domain facts, prose only.
 
     Mutates ``extra_preconditions`` in place and stashes the same text on the
@@ -532,6 +613,8 @@ def _stage7_supplement(analyzer, segments, parsed_report, sdg, slice_mask,
     # pins them to a small, fixed constant set.  Surfacing that to the path-selection and
     # simulation LLM lets it conclude reachability is impossible where CSA saw none.
     # This half is advisory prose only; the decisive gate is immediately below.
+    if lite_graph is not None and lite_graph.prompt_text:
+        extra_preconditions.append(lite_graph.prompt_text)
     try:
         target_fns = {
             s.function_name for s in segments if getattr(s, "function_name", "")
@@ -559,7 +642,7 @@ def _stage7_supplement(analyzer, segments, parsed_report, sdg, slice_mask,
 
 
 def _stage7_gate(analyzer, parsed_report, args, report_ref, entry_fn, source_root,
-                 total_start) -> ResultDocument | None:
+                 total_start, lite_graph=None) -> ResultDocument | None:
     """Stage 7: the decisive semantic finite-domain conflict gate.
 
     Returns the result JSON on a decisive answer, ``None`` when the gate declines
@@ -604,6 +687,7 @@ def _stage7_gate(analyzer, parsed_report, args, report_ref, entry_fn, source_roo
             "verdict_steps": [f"约束补全判定: {semantic_fp_reason}"],
             "total_elapsed_sec": round(time.time() - total_start, 1),
             "code_model": code_model_report(parsed_report, source_root),
+            "lite_graph": lite_graph.to_dict() if lite_graph is not None else None,
         }
         _write_output(_out, _output, total_start)
         return _output
@@ -774,15 +858,15 @@ def _print_results(ctx, verdict_state, explore) -> dict:
     print(f"\n{'='*70}")
     print("RESULTS")
     print(f"{'='*70}")
-    print(f"  Algorithm:  conflict-driven path selection + POC verification")
+    print("  Algorithm:  conflict-driven path selection + POC verification")
     print(f"  Duration:   {ps_stats.get('elapsed_sec', 0):.1f}s")
     print(f"  Segments:   {ps_stats.get('num_segments', 0)}")
     if verdict == "TP":
-        print(f"  Verdict:    ✅ TP (feasible path found)")
+        print("  Verdict:    ✅ TP (feasible path found)")
     elif verdict == "FP":
-        print(f"  Verdict:    ❌ FP (no feasible path)")
+        print("  Verdict:    ❌ FP (no feasible path)")
     else:
-        print(f"  Verdict:    ❓ UNKNOWN ("
+        print("  Verdict:    ❓ UNKNOWN ("
               + (f"{_NO_PATH_STEP_KEYWORD}（报告无路径，不作 TP 验证）"
                  if _NO_PATH_STEP_KEYWORD in (final_step or "")
                  else "path space too large / undecided") + ")")
@@ -823,7 +907,7 @@ def _print_results(ctx, verdict_state, explore) -> dict:
             f"S{info.get('segment_index')}:{info.get('num_feasible_candidates')}"
             for info in path_space.get("per_segment", [])
         )
-        print(f"\n  Path space:")
+        print("\n  Path space:")
         print(f"    per-segment candidates: {seg_summary}")
         print(f"    total enumerated      : {path_space.get('total_feasible_candidates')}")
         print(f"    whole-path bound ∏N_i : {path_space.get('whole_path_bound'):_}"
@@ -835,7 +919,7 @@ def _print_results(ctx, verdict_state, explore) -> dict:
 
     # ── Slice-driven branch-relevance summary (compression) ──
     rel_stats = slice_relevance["stats"]
-    print(f"\n  Slice relevance (root-cause branches):")
+    print("\n  Slice relevance (root-cause branches):")
     print(f"    branch nodes: {rel_stats['num_branch_nodes']} "
           f"| relevant: {rel_stats['num_relevant']} "
           f"| irrelevant: {rel_stats['num_irrelevant']} "
@@ -962,6 +1046,9 @@ def _build_output_dict(
     # ── Code model: the report's own copy vs the local checkout, plus what the
     #    report's index made the model read.  See `code_model_report`. ──
     output["code_model"] = code_model_report(parsed_report, source_root)
+    output["lite_graph"] = (
+        ctx.lite_graph.to_dict() if getattr(ctx, "lite_graph", None) is not None else None
+    )
     return output
 
 
@@ -981,11 +1068,11 @@ def _print_final_verdict(verdict_state, explore) -> None:
     print("最终判定 VERDICT — 判定步骤与依据")
     print("=" * 70)
     if verdict == "TP":
-        print(f"  Verdict:  ✅ TP (真阳性，路径可达且可复现)")
+        print("  Verdict:  ✅ TP (真阳性，路径可达且可复现)")
     elif verdict == "FP":
-        print(f"  Verdict:  ❌ FP (假阳性，路径不可达/不成立)")
+        print("  Verdict:  ❌ FP (假阳性，路径不可达/不成立)")
     else:
-        print(f"  Verdict:  ❓ UNKNOWN ("
+        print("  Verdict:  ❓ UNKNOWN ("
               + (f"{_NO_PATH_STEP_KEYWORD}：报告只给出位置，POC 逐步对照无对象"
                  if _NO_PATH_STEP_KEYWORD in (final_step or "")
                  else "路径空间过大 / 经多轮探索仍无法确定") + ")")
@@ -1030,7 +1117,17 @@ def process_report(args, report_path) -> ResultDocument:
     and ``explore``, which the aggregation then reasons over.
     """
     # Resolve paths
-    report_ref, cfg_cache_path, pdg_path, source_root = _resolve_paths(args, report_path)
+    require_pdg = bool(getattr(args, "no_lite_graph", False))
+    if "require_pdg" in inspect.signature(_resolve_paths).parameters:
+        report_ref, cfg_cache_path, pdg_path, source_root = _resolve_paths(
+            args, report_path, require_pdg=require_pdg,
+        )
+    else:
+        # Compatibility with test/evaluation seams that still expose the
+        # historical two-argument resolver.
+        report_ref, cfg_cache_path, pdg_path, source_root = _resolve_paths(
+            args, report_path,
+        )
     report_path = report_ref.path
     total_start = time.time()
 
@@ -1040,8 +1137,24 @@ def process_report(args, report_path) -> ResultDocument:
     _print_run_banner(args, report_ref, source_root, pdg_path, cfg_cache_path)
 
     stage1 = _stage1_parse(args, report_ref, source_root)
-    project = _stage1_assemble(source_root, cfg_cache_path, pdg_path,
-                                stage1.parsed_report)
+    lite_graph = build_lite_graph(
+        stage1.loaded,
+        source_root,
+        enabled=not (
+            getattr(args, "no_lite_graph", False)
+            or getattr(args, "pdg", None)
+        ),
+        timeout=getattr(args, "lite_graph_timeout", 30.0),
+        compile_commands=getattr(args, "compile_commands", None),
+    )
+    project = _stage1_assemble(
+        source_root,
+        cfg_cache_path,
+        pdg_path,
+        stage1.parsed_report,
+        lite_graph=lite_graph,
+        prefer_exact=bool(getattr(args, "pdg", None)),
+    )
     entry_fn = _stage1_resolve_entry(stage1.entry_fn, project.sdg, stage1.parsed_report)
     segments = _stage2_segment(stage1.parsed_report, project.sdg, source_root)
     _stage2_extend_caches(project.cache_set, segments, project.cfg_cache,
@@ -1050,7 +1163,9 @@ def process_report(args, report_path) -> ResultDocument:
     t0 = time.time()          # stage 3's clock start (shared with _build_analyzer)
     stage3 = _stage3_slice(project.sdg, stage1.parsed_report, stage1.bug_path,
                            source_root, t0)
-    analyzer = _build_analyzer(args, source_root, pdg_path, t0)
+    analyzer = _build_analyzer(
+        args, source_root, pdg_path, t0, sdg=project.sdg, lite_graph=lite_graph,
+    )
     stage4 = _stage4_assumptions(analyzer, segments, stage1.parsed_report,
                                   source_root)
 
@@ -1062,15 +1177,15 @@ def process_report(args, report_path) -> ResultDocument:
     )
 
     early = _stage6_gate(args, report_ref, segments, stage1.parsed_report,
-                         source_root, entry_fn, t0, total_start)
+                         source_root, entry_fn, t0, total_start, lite_graph)
     if early is not None:
         return early
 
     extra_preconditions = _stage7_preamble(stage4.cumulative_state)
     _stage7_supplement(analyzer, segments, stage1.parsed_report, project.sdg,
-                       stage3.slice_mask, extra_preconditions)
+                       stage3.slice_mask, extra_preconditions, lite_graph)
     early = _stage7_gate(analyzer, stage1.parsed_report, args, report_ref,
-                         entry_fn, source_root, total_start)
+                         entry_fn, source_root, total_start, lite_graph)
     if early is not None:
         return early
 
@@ -1084,6 +1199,7 @@ def process_report(args, report_path) -> ResultDocument:
         report_ref=report_ref,
         analyzer=analyzer,
         parsed_report=stage1.parsed_report,
+        loaded=stage1.loaded,
         segments=segments,
         slice_mask=stage3.slice_mask,
         source_root=source_root,
@@ -1104,6 +1220,7 @@ def process_report(args, report_path) -> ResultDocument:
         out_path=stage8.out_path,
         report_stem=stage8.report_stem,
         entry_fn=entry_fn,
+        lite_graph=lite_graph,
         total_start=total_start,
     )
 

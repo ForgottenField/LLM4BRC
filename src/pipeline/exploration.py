@@ -71,6 +71,7 @@ def _run_path_attempts(
     """
     analyzer = ctx.analyzer
     parsed_report = ctx.parsed_report
+    loaded = ctx.loaded
     segments = ctx.segments
     slice_mask = ctx.slice_mask
     source_root = ctx.source_root
@@ -235,7 +236,8 @@ def _run_path_attempts(
         print(f"{'='*70}")
         vres = _verify_path(
             analyzer, report_ref, source_root, out_path, report_stem,
-            selections=selections,
+            selections=selections, parsed_report=parsed_report,
+            loaded=loaded, poc_output_dir=getattr(ctx.args, "poc_output_dir", None),
         )
         poc_result = vres["poc_result"]
         poc_code = vres["poc_code"]

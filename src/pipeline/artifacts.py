@@ -110,7 +110,8 @@ def report_out_path(args, report_path: Path | ReportRef) -> Path:
     if not getattr(args, "output", None):
         return REPO_ROOT / "output" / default_name
     out = Path(args.output)
-    return out if getattr(args, "report", None) else out / default_name
+    is_dir = bool(getattr(args, "output_is_dir", False))
+    return out / default_name if is_dir or not getattr(args, "report", None) else out
 
 
 def _write_output(

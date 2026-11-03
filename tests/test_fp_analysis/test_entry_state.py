@@ -197,6 +197,9 @@ class _StubModel:
             candidates=(self._local,),
         )
 
+    def resolve_strong(self, reported: str):
+        return self.resolve(reported).local
+
     def lines(self, local):
         return list(self._lines or [])
 

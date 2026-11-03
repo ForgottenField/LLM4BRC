@@ -5,9 +5,9 @@ into a ``(report ref, cfg cache, pdg, source root)`` tuple plus the in-memory
 SDG and CFG cache lives here.  The two rules this module exists to uphold:
 
 * **Never substitute another project for an unresolvable one.**  A guess that
-  fails validation is reported, not silently replaced (``_resolve_paths``); a
-  missing ``pdg_<project>.json`` raises rather than analysing another project's
-  call graph.
+  fails validation is reported, not silently replaced (``_resolve_paths``).
+  Exact PDG use is optional on the Tree-sitter fast path, but an explicitly
+  requested artifact must exist and validate.
 * **Refuse a stale PDG artifact.**  A stale artifact parses fine and only its
   declared version says otherwise, so the version is checked before any work.
 """
@@ -17,7 +17,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from fp_analysis.cfg_cache_set import find_fn_key
 from fp_analysis.pdg_augment import augment_pdg_sdg
 from fp_analysis.pdg_loader import load_pdg, read_pdg_artifact_version
 from fp_analysis.pdg_models import PDG_ARTIFACT_VERSION, SDG
@@ -161,13 +160,18 @@ def infer_source_root(
 
 
 def resolve_paths(
-    args, report_path: Path | str | ReportRef
-) -> tuple[ReportRef, Path, Path, Path]:
-    """Resolve (report ref, cfg_cache, pdg, source_root) for one report.
+    args,
+    report_path: Path | str | ReportRef,
+    *,
+    require_pdg: bool = True,
+) -> tuple[ReportRef, Path, Path | None, Path]:
+    """Resolve (report ref, cfg_cache, exact pdg, source_root) for one report.
 
     ``report_path`` may be a plain path or a ``ReportRef`` (``<path>::<finding>``);
     the ref keeps its selector through resolution so a batch of SARIF findings
-    stays addressable.  Every input is validated and a bad one raises
+    stays addressable.  ``require_pdg=False`` allows the Tree-sitter backend to
+    run without a prebuilt exact artifact; an explicit ``--pdg`` is always
+    required to exist.  Every other input is validated and a bad one raises
     ``ValueError`` with the command-line fix in the message.  It must never fall
     back to another project: the old ``source_root = HERE/"project"/"aria2"``
     substitution made ``--report <faiss report>`` load ``pdg_aria2.json`` and an
@@ -215,18 +219,21 @@ def resolve_paths(
 
     project_name = source_root.name
 
-    if args.pdg:
+    explicit_pdg = bool(args.pdg)
+    if explicit_pdg:
         pdg_path = Path(args.pdg).resolve()
     else:
         pdg_path = REPO_ROOT / f"pdg_{project_name}.json"
     if not pdg_path.is_file():
-        # The PDG drives every stage; another project's PDG parses fine and
-        # silently analyses the wrong call graph.
-        raise ValueError(
-            f"SDG/PDG file not found: {pdg_path} (project {project_name!r}). "
-            f"Build it offline for this project, or pass --pdg <path>."
-        )
-    check_pdg_artifact_version(pdg_path, project_name)
+        if explicit_pdg or require_pdg:
+            raise ValueError(
+                f"SDG/PDG file not found: {pdg_path} (project "
+                f"{project_name!r}). Build it offline for this project, pass "
+                f"--pdg <path>, or use the default Tree-sitter fast path."
+            )
+        pdg_path = None
+    else:
+        check_pdg_artifact_version(pdg_path, project_name)
 
     if args.cfg_cache:
         cfg_cache_path = Path(args.cfg_cache).resolve()
@@ -289,11 +296,6 @@ def resolve_cfg_cache(source_root: Path, entry_fn_name: str) -> Path | None:
         except OSError:
             continue
     return None
-
-
-def find_fn_key(cfg_cache, function_name: str, source_file: str = ""):
-    """Resolve *function_name* to a key of *cfg_cache* (see ``find_fn_key``)."""
-    return find_fn_key(cfg_cache, function_name, source_file=source_file)
 
 
 def load_cfg_cache(path: Path) -> dict:

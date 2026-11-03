@@ -65,7 +65,7 @@ import re
 from pathlib import Path
 
 from csa_analysis import BugPath, EventKind, PathEvent
-from fp_analysis.pdg_models import PDGNode, SDG
+from fp_analysis.pdg_models import FunctionPDG, PDGNode, SDG
 
 logger = logging.getLogger(__name__)
 
@@ -177,11 +177,11 @@ def _node_matches_event(node: PDGNode, event: PathEvent) -> bool:
         return node.kind in _CONTROL_PREDICATE_KINDS
 
     # Return event
-    if _is_return_event(desc) and node.kind == "return":
+    if (event.event_kind is EventKind.RETURN or _is_return_event(desc)) and node.kind == "return":
         return True
 
     # Call event
-    if _is_calling_event(desc):
+    if event.event_kind is EventKind.CALL or _is_calling_event(desc):
         if node.is_call:
             if node.callee and _description_mentions(
                     desc, node.callee.split("::")[-1]):
@@ -249,9 +249,9 @@ def find_pdg_nodes_for_event(
         reason = "path_control"
     elif event.event_kind == EventKind.REPORT:
         reason = "path_report"
-    elif _is_calling_event(event.description):
+    elif event.event_kind is EventKind.CALL or _is_calling_event(event.description):
         reason = "path_call"
-    elif _is_return_event(event.description):
+    elif event.event_kind is EventKind.RETURN or _is_return_event(event.description):
         reason = "path_return"
     else:
         reason = "path_event"
@@ -345,7 +345,8 @@ def _find_nodes_via_index(
                     and node.kind in _CONTROL_PREDICATE_KINDS):
                 results.append((fn_name, node_id, reason))
                 break
-            if (_is_calling_event(event.description) and node.is_call):
+            if ((event.event_kind is EventKind.CALL
+                 or _is_calling_event(event.description)) and node.is_call):
                 results.append((fn_name, node_id, reason))
                 break
             if (event.event_kind == EventKind.REPORT
@@ -418,7 +419,8 @@ def _find_nodes_legacy(
                     and node.kind in _CONTROL_PREDICATE_KINDS):
                 results.append((fn_name, node_id, reason))
                 break
-            if (_is_calling_event(event.description) and node.is_call):
+            if ((event.event_kind is EventKind.CALL
+                 or _is_calling_event(event.description)) and node.is_call):
                 results.append((fn_name, node_id, reason))
                 break
             if (event.event_kind == EventKind.REPORT
@@ -669,7 +671,9 @@ def _enrich_with_cross_function_params(
         calling_tokens: set[str] = set()
         for evt in bug_path.events:
             desc = evt.description or ""
-            if _is_calling_event(desc):
+            if evt.callee:
+                calling_tokens.add(evt.callee)
+            elif evt.event_kind is EventKind.CALL or _is_calling_event(desc):
                 # Extract function name before '('
                 for token in desc.replace("'", "").split():
                     clean = token.split("(")[0].split("<")[0]
@@ -876,19 +880,6 @@ def build_path_annotations(
         ``True`` = branch taken, ``False`` = branch NOT taken.
     """
     annotations: dict[tuple[str, int], bool] = {}
-
-    # Use file_index if available (fast path), otherwise fall back to full scan
-    if file_index is not None:
-        ann_sources: list[tuple[str, FunctionPDG]] = [
-            (fn_name, pdg)
-            for file_pdgs in file_index.values()
-            for pdg in file_pdgs
-            for fn_name in [pdg.function_name]
-        ]
-        # Build a reverse mapping of file → list of (fn_name, pdg) for matching
-        _iter_over = file_index
-    else:
-        _iter_over = None
 
     for event in bug_path.events:
         if event.event_kind != EventKind.CONTROL:
@@ -1156,8 +1147,8 @@ def build_caller_map(
     for event in bug_path.events:
         desc = event.description or ""
 
-        if _is_calling_event(desc):
-            callee_name = _extract_fn_name_from_event(desc)
+        if event.event_kind is EventKind.CALL or _is_calling_event(desc):
+            callee_name = event.callee or _extract_fn_name_from_event(desc)
             if not callee_name:
                 continue
             callee_qname = _resolve_fn_name(callee_name, sdg)
@@ -1174,7 +1165,7 @@ def build_caller_map(
                 )
             call_stack.append(callee_qname)
 
-        elif _is_return_event(desc):
+        elif event.event_kind is EventKind.RETURN or _is_return_event(desc):
             if len(call_stack) > 1:
                 call_stack.pop()
 

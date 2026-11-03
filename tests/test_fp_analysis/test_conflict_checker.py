@@ -7,9 +7,7 @@ from fp_analysis.cfg_branch_models import (
     BranchTag,
     CFGBranchNode,
     CFGBranchTree,
-    CalleeReturnInfo,
     Postcondition,
-    ReturnValueMap,
 )
 from fp_analysis.pdg_models import PDGNode, FunctionPDG
 from fp_analysis.conflict_checker import (

@@ -1,10 +1,9 @@
-"""Clang CFG dump invocation, text parsing, and path enumeration.
+"""Clang CFG dump invocation and text parsing.
 
 Provides:
 - ``build_cfg_command()`` — build a clang command that dumps CFG to stderr
 - ``run_cfg_dump()`` — invoke clang and capture raw CFG text
 - ``parse_cfg_text()`` — state-machine parser for ``debug.DumpCFG`` text output
-- ``enumerate_paths()`` — DFS-based enumeration of all paths through a CFG
 
 CFG dump format (from ``clang -cc1 -analyze -analyzer-checker=debug.DumpCFG``)::
 
@@ -32,10 +31,8 @@ import subprocess
 from pathlib import Path
 
 from fp_analysis.cfg_models import (
-    BranchDecision,
     CFGBlock,
     CFGFunction,
-    CFGPathVariant,
 )
 
 logger = logging.getLogger(__name__)
@@ -224,7 +221,7 @@ def build_cfg_command(
 
     # Force-included system headers (for projects needing specific types)
     for inc in config.get("force_includes", []):
-        cmd.append(f"-include")
+        cmd.append("-include")
         cmd.append(inc)
 
     return cmd
@@ -426,8 +423,6 @@ def parse_cfg_text(raw_text: str) -> dict[str, CFGFunction]:
     current_func: str | None = None
     current_blocks: dict[str, CFGBlock] = {}
     current_block: CFGBlock | None = None
-    parsing = "IDLE"  # IDLE | FUNC_HEADER | BLOCK | DONE
-
     def flush_function():
         nonlocal current_func, current_blocks, current_block
         if current_func and current_blocks:
@@ -478,7 +473,6 @@ def parse_cfg_text(raw_text: str) -> dict[str, CFGFunction]:
                 if current_func is not None:
                     flush_function()
                 current_func = stripped
-                parsing = "FUNC_HEADER"
                 continue
 
         # Block header:  [B<N>] or [B<N> (LABEL)]
@@ -492,7 +486,6 @@ def parse_cfg_text(raw_text: str) -> dict[str, CFGFunction]:
                 raw_text=line,
             )
             current_blocks[block_id] = current_block
-            parsing = "BLOCK"
             continue
 
         if current_block is None:
@@ -550,108 +543,3 @@ def _find_entry_block(blocks: dict[str, CFGBlock]) -> str:
     # Find block with most predecessors (typically B1)
     best = max(blocks.items(), key=lambda kv: len(kv[1].predecessors))
     return best[0]
-
-
-# ---------------------------------------------------------------------------
-# Path enumeration
-# ---------------------------------------------------------------------------
-
-
-def enumerate_paths(
-    cfg: CFGFunction,
-    max_variants: int = 16,
-    max_visits_per_block: int = 3,
-) -> list[CFGPathVariant]:
-    """Enumerate all execution paths through a function's CFG.
-
-    Uses DFS with loop detection (counts visits per block per path;
-    if a block is visited *max_visits_per_block* times, the path
-    is terminated to avoid infinite loops).
-
-    Args:
-        cfg: Parsed CFG of the function.
-        max_variants: Cap on the number of paths to enumerate.
-        max_visits_per_block: Loop detection threshold.
-
-    Returns:
-        List of ``CFGPathVariant``, each representing a distinct path
-        through the CFG.
-    """
-    if not cfg.entry_block_id or cfg.entry_block_id not in cfg.blocks:
-        return []
-
-    variants: list[CFGPathVariant] = []
-
-    # Stack entries: (block_id, block_sequence, branch_decisions, visit_counts)
-    block: dict[str, int] = {}
-    stack = [(cfg.entry_block_id, [cfg.entry_block_id], [], block)]
-
-    while stack and len(variants) < max_variants:
-        bid, seq, decisions, counts = stack.pop()
-        block_obj = cfg.blocks.get(bid)
-        if not block_obj:
-            continue
-
-        # Check if this is the EXIT block
-        if bid == cfg.exit_block_id or block_obj.label == "EXIT":
-            variant = CFGPathVariant(
-                variant_id=len(variants),
-                branch_decisions=decisions,
-                block_sequence=seq,
-            )
-            # First path = the original (CSA's approximate path)
-            if len(variants) == 0:
-                variant.is_original_path = True
-            variants.append(variant)
-            continue
-
-        succs = block_obj.successors
-        if not succs:
-            # Dead end — still record what we have
-            variant = CFGPathVariant(
-                variant_id=len(variants),
-                branch_decisions=decisions,
-                block_sequence=seq,
-            )
-            variants.append(variant)
-            continue
-
-        if len(succs) == 1:
-            # Linear flow — follow the single successor
-            new_c = _new_counts(counts, succs[0])
-            if new_c is not None:
-                stack.append(
-                    (succs[0], seq + [succs[0]], list(decisions), new_c)
-                )
-        else:
-            # Branch — push branches in reverse so true (first succ) pops first
-            for i in range(len(succs) - 1, -1, -1):
-                succ = succs[i]
-                is_true = i == 0
-
-                branch_dec = BranchDecision(
-                    block_id=bid,
-                    terminator_text=block_obj.terminator or "",
-                    taken_successor=succ,
-                    alternative_successor=succs[1 - i],
-                    taken_is_true_branch=is_true,
-                )
-
-                new_counts = _new_counts(counts, succ)
-                if new_counts is not None:
-                    stack.append(
-                        (succ, seq + [succ], decisions + [branch_dec], new_counts)
-                    )
-
-    return variants
-
-
-def _new_counts(
-    counts: dict[str, int], next_bid: str, max_visits: int = 3
-) -> dict[str, int] | None:
-    """Return updated visit counts for *next_bid*, or ``None`` if loop detected."""
-    new = dict(counts)
-    new[next_bid] = new.get(next_bid, 0) + 1
-    if new[next_bid] > max_visits:
-        return None
-    return new

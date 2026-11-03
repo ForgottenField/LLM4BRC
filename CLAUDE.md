@@ -42,7 +42,7 @@ python3 tools/probe_report_consistency.py <reports...>
 ### Main end-to-end entry point
 
 ```bash
-# Loads DEEPSEEK_API_KEY from ./.env; exits if unset
+# Loads the provider key from ./config/api_key.json; exits if unavailable
 python3 run_pipeline.py --report <path/to/report.html>
 python3 run_pipeline.py --report <path> --source-root ~/csa_reports/project/faiss
 python3 run_pipeline.py --project ~/csa_reports/project/faiss   # batch: scans reports/{TP,FP}
@@ -65,7 +65,7 @@ feedback loop → TP/FP/UNKNOWN) always runs. `--report-format` is not a mode sw
 pins the adapter when two formats score equally; `--list-formats`/`--list-findings` are the
 self-check flags, and both exit before the API-key check.
 
-`run_path_selection.py` adds `src/` to `sys.path` itself, so no `PYTHONPATH` is
+`run_pipeline.py` adds `src/` to `sys.path` itself, so no `PYTHONPATH` is
 needed. The supported runtime baseline is Python 3.13, matching the local
 development environment and CI.
 
@@ -83,13 +83,13 @@ bash src/csa_analysis/checker/build.sh
 
 Five peer packages under `src/` (report frontend, FP engine, application pipeline,
 C++ tooling, LLM providers), plus a thin top-level runner. The ten-stage
-application lives in `pipeline/`; `run_path_selection.py` at the root only runs
+application lives in `pipeline/`; `run_pipeline.py` at the root only runs
 it.
 
-### `run_path_selection.py` (top level) — the runner; `pipeline/` — the 10 stages
+### `run_pipeline.py` (top level) — the runner; `pipeline/` — the 10 stages
 
-`run_path_selection.py` is **only the runner** (~216 lines): shebang, `sys.path.insert`, the `.env`
-loader, `logging.basicConfig`, the argparse block, `main()`, and a **compat shim** re-exporting the
+`run_pipeline.py` is **only the runner**: shebang, `sys.path.insert`, credential loading,
+`logging.basicConfig`, the argparse block, `main()`, and a **compat shim** re-exporting the
 names the harness tools and the CLI tests import from here (see below). The pipeline itself is the
 package **`pipeline/`** — `layout` (repo-root anchor + the one logger),
 `models` (the dataclasses stages hand each other), `artifacts` (result identity/path/`code_model`
@@ -149,7 +149,7 @@ Results JSON is written to `output/path_selection_<report>.json`.
 One canonical model for **every** static analyzer's report, plus the code the report names.
 **Full description: [`docs/report-frontend.md`](docs/report-frontend.md)**; the modules are:
 
-- **Canonical report model**: `models` (`ReportDocument`, `BugFinding`, `TraceStep`, `StepKind`,
+- **Canonical report model**: `report_model` (`ReportModel`, `BugFinding`, `TraceStep`, `StepKind`,
   `SourceLocation`, `Severity`, `AnalyzerKind`, `ReportFormat`).
 - **Canonical code model**: `code_model` (`SourceCodeModel`, `ResolvedFile`) — one resolution
   ladder (`direct`/`build-prefix`/`relative`/`suffix`/`basename`/`embedded`/`unresolved`) with the
@@ -197,7 +197,7 @@ serves):
 - **Path space + selection**: `path_space`, `branch_relevance`, `cause_invariance`, `shortest_path`, `combination_enum`.
 - **Gates**: `report_consistency` (stage 6a), `entry_state` (stage 6b), `domain_facts` (stage 7 supplement).
 - **Simulation**: `simulation_verifier`.
-- **Parsing/support**: `source_context`, `lib_knowledge`, `models`, `prompt_templates` — plus
+- **Parsing/support**: `source_context`, `models`, `prompt_templates` — plus
   `html_parser`, which is now only a **compatibility shim** over `report_frontend` + `report_bridge`
   (its parsing moved to `report_frontend/adapters/csa_html`). New code should use the frontend
   directly; the shim exists so the existing call sites and tests did not have to churn in the same
@@ -215,6 +215,14 @@ and `--llm-timeout`.
 
 ## Data artifacts
 
+- `tree_sitter_backend` — the default bounded fast path. It has no imports from
+  `fp_analysis`, `pipeline`, or `report_frontend`; `pipeline/lite_graph.py`
+  adapts its detached AST/PDG-Lite output to the existing SDG contract. Native
+  parsing runs in an isolated worker and can be replaced by the exact backend
+  when it fails or does not cover the report entry. It requires
+  `<project-root>/compile_commands.json` (or `--compile-commands`), uses only
+  compiler preprocessing, builds basic blocks, and computes reaching
+  definitions over the CFG.
 - `pdg_<project>.json` — SDG/PDG produced by the C++ PDG builder. **One artifact per project, and it
   must declare the version this code expects** (`Metadata["version"]` in `PDGBuilder.cpp` ==
   `pdg_models.PDG_ARTIFACT_VERSION`, currently `1.3`): a stale artifact parses fine and only its

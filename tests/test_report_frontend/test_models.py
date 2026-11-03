@@ -134,6 +134,11 @@ class TestBugFinding:
     def test_steps_of(self, finding: BugFinding) -> None:
         assert len(finding.steps_of(StepKind.CONTROL)) == 1
 
+    def test_call_and_error_start_accessors(self, finding: BugFinding) -> None:
+        assert finding.error_start is finding.steps[0]
+        assert finding.calls == [finding.steps[1]]
+        assert finding.call_chain == ["helper"]
+
     def test_round_trip(self, finding: BugFinding) -> None:
         back = BugFinding.from_dict(finding.to_dict())
         assert back.finding_id == finding.finding_id
@@ -141,9 +146,10 @@ class TestBugFinding:
         assert back.severity is Severity.WARNING
         assert [s.kind for s in back.steps] == [s.kind for s in finding.steps]
         assert back.location == finding.location
+        assert back.raw == finding.raw
 
 
-class TestReportDocument:
+class TestReportModel:
     @pytest.fixture
     def document(self) -> ReportModel:
         def mk(fid: str, rule: str, file: str, line: int) -> BugFinding:
@@ -162,6 +168,7 @@ class TestReportDocument:
                 mk("cpp/b@faiss/utils/AlignedTable.h:66",
                    "cpp/b", "faiss/utils/AlignedTable.h", 66),
             ],
+            metadata={"run": "demo"},
         )
 
     def test_is_multi_finding(self, document: ReportModel) -> None:
@@ -188,6 +195,7 @@ class TestReportDocument:
         assert [f.finding_id for f in back.findings] == [
             f.finding_id for f in document.findings
         ]
+        assert back.metadata == {"run": "demo"}
 
     def test_model_version_is_declared(self) -> None:
         # A serialised bundle that cannot say which model shape it is has

@@ -52,8 +52,9 @@ class FPReportParser:
 
     def __init__(self, source_root: str | Path | None = None) -> None:
         self.source_root = source_root
-        self._frontend = ReportFrontend(source_root=source_root)
-        self._adapter = CsaHtmlAdapter()
+        self._frontend = ReportFrontend(
+            source_root=source_root, report_format=ReportFormat.CSA_HTML,
+        )
 
     # -- legacy parsing API ------------------------------------------------
 
@@ -81,9 +82,7 @@ class FPReportParser:
         while the frontend did not — two entry paths, two different models for
         the same report.
         """
-        return ReportFrontend(
-            source_root=self.source_root, report_format=ReportFormat.CSA_HTML,
-        ).load(ReportRef.parse(report))
+        return self._frontend.load(ReportRef.parse(report))
 
     # -- kept for callers that reached for the private helper --------------
 

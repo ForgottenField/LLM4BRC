@@ -49,32 +49,6 @@ class CFGBlock(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class BranchDecision(BaseModel):
-    """A single branch choice at a terminator with two successors."""
-
-    block_id: str = Field(description="Block where the branch occurs")
-    terminator_text: str = Field(description="Condition text from T: line")
-    source_line: int = Field(default=0, description="Source line if extractable")
-    taken_successor: str = Field(description="Successor block that was taken")
-    alternative_successor: str = Field(description="Successor block NOT taken")
-    taken_is_true_branch: bool = Field(
-        default=True, description="True = first successor (true br), False = second (false br)"
-    )
-
-
-class CFGPathVariant(BaseModel):
-    """One enumerated path through a function's CFG."""
-
-    variant_id: int = Field(description="0 = CSA original path, 1..N = alternatives")
-    branch_decisions: list[BranchDecision] = Field(
-        default_factory=list, description="Ordered list of branch choices"
-    )
-    block_sequence: list[str] = Field(
-        default_factory=list, description="Ordered block IDs traversed"
-    )
-    is_original_path: bool = Field(default=False)
-
-
 # ---------------------------------------------------------------------------
 # Function-level CFG
 # ---------------------------------------------------------------------------
@@ -156,16 +130,6 @@ class BugReportPath(BaseModel):
                 return n.function_name
         return ""
 
-    def function_body(self, function_name: str) -> str:
-        """Return the source code of *function_name* from entry to end."""
-        lines: list[str] = []
-        for n in self.nodes:
-            if n.function_name == function_name:
-                if n.node_type == NodeType.ENTRY:
-                    # Will accumulate lines from all nodes in this function
-                    pass
-        return ""
-
     def source_between(
         self, event_from: int, event_to: int
     ) -> str:
@@ -182,7 +146,6 @@ class BugReportPath(BaseModel):
         if not target:
             return "(event not found)"
         fn_start = target.function_line_start
-        fn_end = target.function_line_end
         line_to = target.line_number
 
         # If event_from exists and is in the same function, start from its line
@@ -373,64 +336,6 @@ class SegmentInfo(BaseModel):
         """Return human-readable precondition description."""
         return "\n".join(self.precondition_facts) if self.precondition_facts \
             else "Function entry / no prior events."
-
-
-class SegmentPathAnalysis(BaseModel):
-    """Analysis of one segment of the CSA path."""
-
-    segment_index: int = Field(description="Index in segment list")
-    segment_label: str = Field(default="")
-    function_name: str = Field(default="", description="Function analyzed for this segment")
-
-    original_path_variant: Optional[CFGPathVariant] = Field(default=None)
-    alternative_variants: list[CFGPathVariant] = Field(default_factory=list)
-
-    # variant_id → feasibility status
-    variant_feasibility: dict[int, Optional[bool]] = Field(
-        default_factory=dict, description="True=feasible, False=infeasible, None=unchecked"
-    )
-    variant_reasoning: dict[int, str] = Field(
-        default_factory=dict, description="LLM reasoning per variant"
-    )
-
-    has_infeasible_segment: bool = Field(
-        default=False,
-        description="True if NO variant is feasible → confirmed FP",
-    )
-
-    # Established state after this segment (for chaining to next segment)
-    established_state: str = Field(
-        default="",
-        description="LLM's description of program state after this segment executes",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Top-level result
-# ---------------------------------------------------------------------------
-
-
-class CFGAnalysisResult(BaseModel):
-    """Top-level result of CFG-based feasibility analysis."""
-
-    segments: list[SegmentPathAnalysis] = Field(
-        default_factory=list, description="Analysis per segment"
-    )
-    overall_infeasible: bool = Field(
-        default=False,
-        description="True = at least one segment has no feasible path → confirmed FP",
-    )
-    cfg_functions: dict[str, CFGFunction] = Field(
-        default_factory=dict, description="function_name → parsed CFG"
-    )
-    original_path_feasible: bool = Field(
-        default=True,
-        description="Whether the original CSA path is feasible",
-    )
-    metadata: dict = Field(
-        default_factory=dict,
-        description="Timing, errors, fallback info",
-    )
 
 
 # ---------------------------------------------------------------------------

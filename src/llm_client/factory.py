@@ -8,9 +8,7 @@ from typing import TYPE_CHECKING
 from llm_client.base import LLMProvider, LLMConfig
 
 if TYPE_CHECKING:
-    from llm_client.anthropic_provider import ClaudeProvider
-    from llm_client.deepseek_provider import DeepSeekProvider
-    from llm_client.openai_provider import OpenAIProvider
+    pass
 
 
 class ProviderFactory:

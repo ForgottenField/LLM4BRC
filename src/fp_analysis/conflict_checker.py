@@ -23,7 +23,6 @@ from fp_analysis.cfg_branch_models import (
     BranchTag,
     CFGBranchNode,
     CFGBranchTree,
-    CalleeReturnInfo,
     Postcondition,
 )
 from fp_analysis.cfg_models import CFGFunction
@@ -583,7 +582,7 @@ class ConflictChecker:
     def check_segment(
         self,
         tree: CFGBranchTree,
-        segment_info: object | None,
+        _segment_info: object | None,
         established_state: dict[str, str],
         path_events: list[dict] | None = None,
         event_range: tuple[int, int] | None = None,

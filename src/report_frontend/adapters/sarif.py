@@ -494,13 +494,4 @@ class SarifAdapter(ReportAdapter):
         )
 
 
-def parse_sarif(path: Path, text: str | None = None) -> ReportModel:
-    """Convenience: parse a SARIF file without going through detection."""
-    if text is None:
-        if not path.exists():
-            raise ReportParseError(f"SARIF report not found: {path}")
-        text = path.read_text(encoding="utf-8", errors="replace")
-    return SarifAdapter().load(path, text)
-
-
-__all__ = ["SarifAdapter", "parse_sarif"]
+__all__ = ["SarifAdapter"]

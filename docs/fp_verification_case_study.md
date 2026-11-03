@@ -10,7 +10,7 @@
 > 本文档完整记录两个真实案例 —— `MemoryTest` 与 `XlogTest`，说明它们为何本质是 **False Positive (FP)**，以及验证流程如何通过**多轮测试用例的模拟执行**最终将其成功判定为 FP。
 >
 > 项目：`bug_report_classification`（Clang Static Analyzer 报告的 LLM 辅助 FP 检测 / POC 生成流水线）
-> 验证命令：`python3 run_path_selection.py --project <folly_root> --report <report.html>`
+> 验证命令：`python3 run_pipeline.py --project <folly_root> --report <report.html>`
 > （POC 验证默认开启，无需传开关）
 > 产出 JSON：`output/path_selection_report-*.json`（含 `poc_verification.simulation` 逐轮记录）
 
@@ -240,6 +240,6 @@ TEST(XlogEveryNThreadEntryTest, UninitializedThreadLocalMap) {
 
 - `src/fp_analysis/simulation_verifier.py` —— 模拟执行 + 反馈循环模块
 - `src/fp_analysis/prompt_templates.py` —— `SIMULATION_*` / `SIMULATION_REFINE_*` 提示词
-- `run_path_selection.py` —— 验证阶段接入模拟环节，并在反馈判定未触发时翻转 verdict 为 FP
+- `run_pipeline.py` —— 验证阶段接入模拟环节，并在反馈判定未触发时翻转 verdict 为 FP
 - `output/path_selection_report-MemoryTest.cpp-Destroy-2-1.json`、`output/path_selection_report-XlogTest.cpp-xlogEveryNThreadEntry-20-1.json`
 - `output/poc_report-XlogTest.cpp-xlogEveryNThreadEntry-20-1.cpp`（XlogTest POC，编译通过）

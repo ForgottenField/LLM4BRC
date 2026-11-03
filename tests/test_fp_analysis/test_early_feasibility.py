@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from fp_analysis.path_analyzer import (
     _check_anchor_against_constraints,

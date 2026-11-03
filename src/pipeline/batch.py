@@ -39,6 +39,21 @@ def is_report_file(path: Path) -> bool:
 _is_report_file = is_report_file
 
 
+def _expand_work_items(args, refs):
+    """Expand multi-finding documents while treating CSA HTML as atomic."""
+    frontend = ReportFrontend(report_format=getattr(args, "report_format", None))
+    work_items: list[ReportRef] = []
+    for ref in refs:
+        if ref.selector or (
+            ref.path.suffix.lower() in {".html", ".htm"}
+            and getattr(args, "report_format", None) in (None, "csa-html")
+        ):
+            work_items.append(ref)
+        else:
+            work_items.extend(frontend.expand([ref]))
+    return work_items
+
+
 def collect_reports(args):
     """Return the ordered list of work items (``ReportRef``) to process.
 
@@ -66,21 +81,21 @@ def collect_reports(args):
     elif args.report:
         ref = ReportRef.parse(args.report)
         ref = ReportRef(ref.path.resolve(), ref.selector)
-        frontend = ReportFrontend(report_format=getattr(args, "report_format", None))
-        return frontend.expand([ref])
+        return _expand_work_items(args, [ref])
     else:
         raise SystemExit(
             "No reports to process: pass --report, or --project / --scan-dir"
         )
 
-    frontend = ReportFrontend(report_format=getattr(args, "report_format", None))
-    return frontend.expand(found)
+    return _expand_work_items(
+        args, [ReportRef(path.resolve()) for path in found],
+    )
 
 
 _collect_reports = collect_reports
 
 
-def run_batch(args, reports) -> None:
+def run_batch(args, reports) -> dict:
     """Process every work item in *reports*, then print and save the aggregate.
 
     The caller (``main``) has already collected the work items and resolved each
@@ -155,9 +170,11 @@ def run_batch(args, reports) -> None:
     # Write aggregate JSON
     agg_out = (Path(args.batch_summary) if args.batch_summary
                else REPO_ROOT / "output" / "batch_summary.json")
-    write_json_atomic(agg_out, {
+    summary = {
         "total": len(aggregate), "tp": n_tp, "fp": n_fp,
         "unknown": n_unknown, "error": n_err,
         "results": aggregate,
-    })
+    }
+    write_json_atomic(agg_out, summary)
     print(f"\nBatch summary saved to: {agg_out}")
+    return summary

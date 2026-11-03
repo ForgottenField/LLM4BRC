@@ -338,9 +338,31 @@ class SourceCodeModel:
     # -- embedded source ---------------------------------------------------
 
     def add_embedded(self, reported: str, lines: dict[int, str]) -> None:
-        """Register a file's source as carried *by the report itself*."""
+        """Register source under the local file shared by every path alias.
+
+        CSA may title a section ``./header.h`` or ``file.c`` while ``BUGFILE``
+        uses the analyzer machine's absolute path.  Resolving first prevents
+        those spellings from creating separate embedded-source entries.
+        """
         if reported and lines:
-            self._embedded.setdefault(reported, {}).update(lines)
+            self._embedded.setdefault(
+                self._embedded_key(reported), {},
+            ).update(lines)
+            # ``_embedded_key`` resolves the alias and may have cached an
+            # unresolved answer before the source was registered.
+            self._resolved.pop(reported, None)
+
+    def has_embedded(self, reported: str) -> bool:
+        """True when the report carries source for *reported* or its alias."""
+        return bool(self._embedded_for(reported))
+
+    def _embedded_key(self, reported: str) -> str:
+        """Canonical key shared by BUGFILE and section-path spellings."""
+        local = self.resolve(reported).local
+        return str(local) if local is not None else reported
+
+    def _embedded_for(self, reported: str) -> dict[int, str]:
+        return self._embedded.get(self._embedded_key(reported), {})
 
     @property
     def embedded_files(self) -> tuple[str, ...]:
@@ -392,7 +414,7 @@ class SourceCodeModel:
             reported_seen.add(ref.reported)
             local = ref.resolution.local
             if local is None:
-                if ref.reported in self._embedded:
+                if self.has_embedded(ref.reported):
                     # No local file, but the report carries this one's source:
                     # readable without the tree, which is why it is not a gap.
                     files.append({
@@ -400,7 +422,7 @@ class SourceCodeModel:
                         "local": None,
                         "strategy": ref.resolution.strategy,
                         "source": STRATEGY_EMBEDDED,
-                        "lines": len(self._embedded.get(ref.reported, {})),
+                        "lines": len(self._embedded_for(ref.reported)),
                         "bytes": 0,
                     })
                 else:
@@ -515,6 +537,11 @@ class SourceCodeModel:
                 ", ".join(str(p) for p in result.rivals[:3]),
             )
         return result
+
+    def resolve_strong(self, reported: str) -> Optional[Path]:
+        """Resolve only when the match pins a position, not just a basename."""
+        hit = self.resolve(reported)
+        return hit.local if hit.is_strong else None
 
     def _resolve_uncached(self, reported: str) -> ResolvedFile:
         """The resolution ladder.  Each rung is a strictly weaker claim."""
@@ -681,7 +708,7 @@ class SourceCodeModel:
         signal meaningful.  A SARIF report embeds nothing and the local file is
         then the only source.
         """
-        embedded = self._embedded.get(reported, {})
+        embedded = self._embedded_for(reported)
         if embedded_first and embedded:
             window = {
                 n: text for n, text in embedded.items()

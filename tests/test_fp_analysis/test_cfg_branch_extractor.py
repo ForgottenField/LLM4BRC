@@ -580,7 +580,7 @@ class TestCallGraphResolution:
     @pytest.fixture
     def cfg_cache_two_callees(self) -> dict:
         """CFG cache with two wslay_queue_push entries (disambiguation target)."""
-        from fp_analysis.cfg_models import CFGFunction, CFGBlock
+        from fp_analysis.cfg_models import CFGFunction
         _empty: dict[str, CFGBlock] = {}
         return {
             "wslay_event_queue_msg_ex": CFGFunction(

@@ -11,14 +11,12 @@ from pathlib import Path
 from llm_client.base import LLMConfig, LLMRequest, LLMProvider
 from llm_client.factory import ProviderFactory
 
-from fp_analysis.report_bridge import to_bug_path, to_parsed_report
+from fp_analysis.report_bridge import to_parsed_report
 from fp_analysis.models import (
     AnalysisResult,
     CompletedPath,
     CompletedStep,
-    Confidence,
     ParsedReport,
-    PathAnalysis,
     code_model_of,
 )
 from fp_analysis.prompt_templates import (
@@ -646,40 +644,6 @@ def _walk_branch_nodes(nodes: list) -> list:
     return result
 
 
-def resolve_source_path(bug_file: str, source_root: str) -> str:
-    """Resolve a bug report source file path to a local path under *source_root*.
-
-    Tries, in order:
-    1. The absolute path as-is (if it exists locally).
-    2. If *bug_file* is relative, ``source_root / bug_file``.
-    3. Suffix matching — iterates the parts of the absolute *bug_file* path
-       (which may be from a different build machine) and checks each suffix
-       under *source_root*.
-
-    Returns the first path that exists, or the original *bug_file* if none
-    does (caller must handle gracefully).
-    """
-    path = Path(bug_file)
-    if path.exists():
-        return str(path)
-
-    if source_root:
-        src_root = Path(source_root)
-        if not path.is_absolute():
-            test = src_root / path
-            if test.exists():
-                return str(test)
-
-        # Absolute path from a different build machine — match suffix
-        parts = path.parts
-        for i in range(1, len(parts)):
-            test = src_root.joinpath(*parts[i:])
-            if test.exists():
-                return str(test)
-
-    return bug_file  # give up
-
-
 # ---------------------------------------------------------------------------
 # Constraint helpers (module-level, used by FPAnalyzer + tests)
 # ---------------------------------------------------------------------------
@@ -913,15 +877,14 @@ class FPAnalyzer:
         # finish_reason="stop" after 11,000 completion tokens, so the model's cap
         # is well above 8192 — the budget is ours to set.
         max_tokens: int = 16384,
-        output_dir: str | Path = "",
         pdg_path: str | Path | None = None,
         report_format: str | None = None,
+        sdg: SDG | None = None,
     ) -> None:
         self._model = model
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._source_root = str(Path(source_root).resolve()) if source_root else ""
-        self._output_dir = Path(output_dir).resolve() if output_dir else Path("output/intermediate")
         # The report frontend owns parsing now; ``report_format`` pins an
         # adapter (``--report-format``) when detection would be ambiguous.
         self._report_format = report_format
@@ -931,10 +894,11 @@ class FPAnalyzer:
         self._source_extractor = SourceContextExtractor(
             project_root=self._source_root or None
         )
-        self._sdg: SDG | None = None
+        self._sdg: SDG | None = sdg
+        self._lite_evidence = ""
 
         # Load PDG if provided
-        if pdg_path:
+        if self._sdg is None and pdg_path:
             pdg_file = Path(pdg_path)
             if pdg_file.exists():
                 try:
@@ -981,12 +945,19 @@ class FPAnalyzer:
     def domain_facts_text(self) -> str:
         return getattr(self, "_domain_facts_text", "")
 
+    @property
+    def lite_evidence(self) -> str:
+        return self._lite_evidence
+
     def ensure_project_name(self, project_name: str) -> None:
         if not self._project_name:
             self._project_name = project_name
 
     def set_domain_facts_text(self, text: str) -> None:
         self._domain_facts_text = text
+
+    def set_lite_evidence(self, text: str) -> None:
+        self._lite_evidence = text
 
     def extract_class_names_from_path(self, parsed_report: ParsedReport) -> list[str]:
         return self._extract_class_names_from_path(parsed_report)
@@ -1101,27 +1072,37 @@ class FPAnalyzer:
             source_root: Optional project root for source resolution.
 
         Returns:
-            AnalysisResult with parsed report and a neutral PathAnalysis
-            (empty gaps — no LLM gap analysis performed).
+            AnalysisResult containing the parsed report and source root.
 
         Raises:
             ValueError: If report is missing required metadata.
         """
         source_root = source_root or self._source_root
         if source_root:
+            self._source_root = str(Path(source_root).resolve())
             self._source_extractor = SourceContextExtractor(
-                project_root=str(source_root)
+                project_root=self._source_root
             )
             self._frontend = ReportFrontend(
-                source_root=str(source_root), report_format=self._report_format,
+                source_root=self._source_root,
+                report_format=self._report_format,
             )
 
-        # Step A: Parse the report (any supported format) into the pipeline's
-        # legacy view — ``report_bridge`` renders the canonical finding back
-        # into the ``ParsedReport``/``BugPath`` every stage below reads.
         loaded = self._frontend.load(report_path)
         parsed = to_parsed_report(loaded)
-        bug_path = to_bug_path(loaded)
+        return self.analyze_report_view(parsed, report_ref=report_path)
+
+    def analyze_report_view(
+        self,
+        parsed: ParsedReport,
+        report_ref: "str | Path | ReportRef | None" = None,
+    ) -> AnalysisResult:
+        """Build the stage-10 analysis view from an already parsed report.
+
+        Stage 1 has already performed report parsing and source resolution.
+        Re-parsing the same document here produced a second independent model
+        whose identity depended on file state rather than on the work item.
+        """
 
         # The frontend builds a code model per report and knows nothing of the
         # PDG (it is format-only); the analyzer does, so it hands its model the
@@ -1133,53 +1114,10 @@ class FPAnalyzer:
             code_model_of(parsed, self._source_root), self._sdg, self._source_root,
         )
 
-        # Step B: Extract source context
-        source_ctx = self._source_extractor.extract(parsed)
-        source_ctx_str = source_ctx.format_for_llm(max_lines=80)
-
-        # Step B2: Extract call chain context for data flow tracing
-        call_chain = self._source_extractor.extract_call_chain(parsed)
-        call_chain_str = self._format_call_chain(call_chain)
-
-        # Step C: Format path events with annotations
-        # ⚠ marks the Error Start event (value origin), → marks function calls
-        path_str_lines = []
-        for evt in parsed.path_events:
-            line_info = f" L{evt['line_number']}" if evt['line_number'] else ""
-            prefix = "⚠ " if evt.get("is_error_start") else "  "
-            path_str_lines.append(
-                f"{prefix}#{evt['path_number']} [{evt['event_kind']}]{line_info}: {evt['description']}"
-            )
-        path_str = "\n".join(path_str_lines)
-
-        # Error Start info section (used by constraint completion prompt)
-        error_start_info_str = self._format_error_start_info(
-            parsed.error_start_event, bug_type=parsed.metadata.bug_type,
-        )
-
-        # Build a neutral PathAnalysis (no gap analysis — gaps filled later
-        # by _complete_constraints())
-        neutral_analysis = PathAnalysis(
-            path_id=Path(str(report_path)).stem,
-            is_likely_fp=False,
-            gaps=[],
-            confidence=Confidence.HIGH,
-            reasoning=f"Path through {parsed.metadata.function_name} "
-                      f"with {len(parsed.path_events)} events. "
-                      f"Constraint completion and feasibility check follow.",
-        )
-
         result = AnalysisResult(
             parsed_report=parsed,
-            bug_path=bug_path,
-            analysis=neutral_analysis,
-            source_root=str(source_root) if source_root else "",
-            annotated_path=path_str,
-            call_chain_context=call_chain_str,
+            source_root=self._source_root,
         )
-
-        # Save intermediate JSON for debugging
-        self._save_intermediate_json(result, str(report_path))
 
         return result
 
@@ -1189,286 +1127,6 @@ class FPAnalyzer:
 
     # ------------------------------------------------------------------
     # Slice variable analysis for constraint completion
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _analyze_slice_variables(reduced_code: str) -> str:
-        """Scan reduced (sliced) code for library calls, member fields, globals.
-
-        Returns a formatted string suitable for injection into the constraint
-        completion prompt.  Returns an empty string if no variables of interest
-        are found.
-        """
-        if not reduced_code.strip():
-            return ""
-
-        findings: list[str] = []
-
-        # ── Library function calls ──
-        lib_funcs: set[str] = set()
-        for m in re.finditer(
-            r'\b(memset|memcpy|memmove|malloc|calloc|realloc|free|'
-            r'strcpy|strncpy|sprintf|snprintf|printf|fprintf|assert'
-            r'|getopt_long|mmap|munmap|socket|bind|listen|accept|close'
-            r'|read|write|open|fopen|fclose|fread|fwrite)\s*\(',
-            reduced_code,
-        ):
-            lib_funcs.add(m.group(1))
-        if lib_funcs:
-            findings.append(
-                f"- Library functions in slice: {', '.join(sorted(lib_funcs))}"
-            )
-
-        # ── Member field accesses (this->foo or this.foo) ──
-        field_accesses: set[str] = set()
-        for m in re.finditer(r'(?<!\w)this\s*[.-]>\s*(\w+)', reduced_code):
-            field_accesses.add(m.group(1))
-        for m in re.finditer(r'\[this\]\.(\w+)', reduced_code):
-            field_accesses.add(m.group(1))
-        if field_accesses:
-            findings.append(
-                f"- Member field accesses in slice: {', '.join(sorted(field_accesses))}"
-            )
-
-        # ── Potential global / member variables (trailing-underscore heuristic) ──
-        globals_found: set[str] = set()
-        for m in re.finditer(r'\b([a-z][a-zA-Z0-9_]+_)\b', reduced_code):
-            name = m.group(1)
-            if name not in ('this_',) and len(name) > 2:
-                globals_found.add(name)
-        if globals_found:
-            findings.append(
-                f"- Potential member/global vars: {', '.join(sorted(globals_found)[:10])}"
-            )
-
-        if not findings:
-            return ""
-
-        return (
-            "## Slice Variable Analysis (variables found in PDG-sliced code)\n"
-            + "\n".join(findings)
-            + "\n"
-        )
-
-    # ------------------------------------------------------------------
-    # Library API contract formatting (inject into LLM prompts)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _format_library_api_contracts(reduced_code: str) -> str:
-        """Scan reduced code for known library function calls and format API contracts.
-
-        Uses the static knowledge base in ``lib_knowledge.py`` — if a function
-        call found in the reduced code is registered there, its API documentation
-        (return semantics, side effects, preconditions) is injected.
-
-        Returns a formatted section suitable for inclusion in any LLM prompt,
-        or an empty string if no library functions are detected.
-
-        This method stays in sync automatically: adding a new entry to
-        ``_LIB_FUNCTIONS`` in ``lib_knowledge.py`` makes it available here
-        without updating any regex.
-        """
-        if not reduced_code.strip():
-            return ""
-
-        # Strip C++ comments before scanning to avoid false positives from
-        # function names mentioned in comments.  Line comments are stripped
-        # per-line (re.MULTILINE); block comments need re.DOTALL since they
-        # can span multiple lines.  String/char literals are also stripped
-        # to avoid matching function names inside string constants.
-        code_no_comments = re.sub(r'//.*', '', reduced_code, flags=re.MULTILINE)
-        code_no_comments = re.sub(r'/\*.*?\*/', '', code_no_comments, flags=re.DOTALL)
-        code_no_comments = re.sub(r"'[^']*'", '', code_no_comments)
-        code_no_comments = re.sub(r'"[^"]*"', '', code_no_comments)
-
-        from fp_analysis.lib_knowledge import list_registered, lookup
-
-        found_contracts: list[str] = []
-        for fn_name in list_registered():
-            if re.search(rf'\b{re.escape(fn_name)}\s*\(', code_no_comments):
-                entry = lookup(fn_name)
-                if entry:
-                    found_contracts.append(entry.format_for_llm())
-
-        if not found_contracts:
-            return ""
-
-        section = (
-            "## Library Function API Contracts (from knowledge base)\n"
-            "The following are the API contracts for library functions "
-            "detected in the sliced code. Use these as ground truth:\n\n"
-            + "\n\n".join(found_contracts)
-            + "\n"
-        )
-        return section
-
-    # ------------------------------------------------------------------
-    # Domain-specific knowledge injection (union type-punning,
-    # loop-carried initialization, path-merging detection)
-    # ------------------------------------------------------------------
-
-    _UNION_TYPES = frozenset({
-        "sockaddr_union", "pthread_mutex_t", "pthread_cond_t",
-        "epoll_data_t", "sigval", "event",
-    })
-
-    @staticmethod
-    def _detect_union_type_punning(reduced_code: str) -> str:
-        """Detect union type-punning patterns and return knowledge injection.
-
-        POSIX networking code commonly uses ``sockaddr_union`` where
-        ``memcpy(&ad.storage, ...)`` writes to one union member and
-        ``ad.in.sin_addr.s_addr`` reads from another member of the same
-        union.  The CSA's type tracking treats these as separate variables,
-        but in practice the members share the same storage bytes.
-
-        Returns a formatted instruction string, or empty string if no
-        union pattern is detected.
-        """
-        if not reduced_code.strip():
-            return ""
-
-        # Strip comments/strings before scanning
-        code = re.sub(r'//.*', '', reduced_code, flags=re.MULTILINE)
-        code = re.sub(r'/\*.*?\*/', '', code, flags=re.DOTALL)
-        code = re.sub(r"'[^']*'", '', code)
-        code = re.sub(r'"[^"]*"', '', code)
-
-        # (A) Check for union type declarations or known union type names
-        has_union_keyword = bool(re.search(r'\bunion\s+\w+\s*\{', code))
-        has_known_union_type = bool(
-            re.search(
-                r'\b(' + '|'.join(re.escape(t) for t in FPAnalyzer._UNION_TYPES) + r')\b',
-                code,
-            )
-        )
-        # (B) Check for memcpy(&var.member1, ...) followed by var.member2 access
-        memcpy_targets: set[str] = set()
-        for m in re.finditer(r'memcpy\s*\(\s*&(\w+)\.(\w+)', code):
-            memcpy_targets.add(m.group(1))
-
-        union_member_reads: set[str] = set()
-        for var in memcpy_targets:
-            for m in re.finditer(rf'\b{re.escape(var)}\.(\w+)', code):
-                union_member_reads.add(f"{var}.{m.group(1)}")
-
-        has_memcpy_type_punning = bool(union_member_reads)
-
-        if not (has_union_keyword or has_known_union_type or has_memcpy_type_punning):
-            return ""
-
-        lines = [
-            "\n\n## ⚠ Union Type-Punning (C/C++ Domain Knowledge)",
-            "The code above uses a C/C++ `union` where different members share the same storage.",
-            "This is STANDARD PRACTICE in POSIX networking code and other low-level C/C++.",
-            "CRITICAL: When `memcpy` (or any write) targets one union member (e.g. `var.storage`),",
-            "it INITIALIZES the bytes shared by ALL union members — even though",
-            "the CSA's type-based tracking treats them as separate variables.",
-            "Reading from another union member (e.g. `var.in.sin_addr.s_addr`) after writing",
-            "to a different member (`var.storage`) is valid and well-defined at the byte level.",
-            "",
-            "If the CSA path claims a union member is \"garbage\" or \"uninitialized\" but another",
-            "member was written to before the read, this is LIKELY A FALSE POSITIVE caused by",
-            "the CSA's conservative union type modeling.",
-        ]
-        return "\n".join(lines)
-
-    @staticmethod
-    def _detect_loop_initialized_vars(reduced_code: str) -> str:
-        """Detect loop-carried initialization patterns.
-
-        A local variable declared inside a loop body (e.g.
-        ``uint32_t codep;`` inside ``for(...) { ... }``) may be
-        initialized on the first iteration by a function call that
-        writes through a pointer.  On subsequent iterations the
-        variable retains the value written by the previous call,
-        but the CSA (which treats each loop iteration independently)
-        may incorrectly flag it as uninitialized.
-        """
-        if not reduced_code.strip():
-            return ""
-
-        code = re.sub(r'//.*', '', reduced_code, flags=re.MULTILINE)
-        code = re.sub(r'/\*.*?\*/', '', code, flags=re.DOTALL)
-        code = re.sub(r"'[^']*'", '', code)
-        code = re.sub(r'"[^"]*"', '', code)
-        code = re.sub(r'\bauto\s+', '', code)
-
-        # Look for loops containing local var + address-taking function call
-        # Pattern: for/while (...) { ... type var; ... func(&var, ...) ... }
-        loop_pattern = re.compile(
-            r'\b(for|while)\s*\(.*?\)\s*\{'
-            r'(?:(?!\}).)*?'                              # non-greedy skip
-            r'\b(\w[\w\s*&]*)\s+(\w+)\s*(?:=\s*[^;,]+)?;'  # local var decl
-            r'(?:(?!\}).)*?'
-            r'&\3\b',                                      # &var in call
-            re.DOTALL | re.IGNORECASE,
-        )
-
-        # Simpler heuristic: find loops with a local variable that is
-        # passed by address to a nearby function call
-        has_loop_init_pattern = bool(
-            re.search(
-                r'\b(for|while)\s*\(.*\)\s*\{[^}]*?'
-                r'\b\w[\w\s*&]*\s+\w+\s*;\s*[^}]*?'
-                r'&\w+\s*[,)]',
-                code,
-                re.DOTALL,
-            )
-        )
-
-        if not has_loop_init_pattern:
-            return ""
-
-        return (
-            "\n\n## ⚠ Loop-Carried Variable Initialization (C/C++ Domain Knowledge)\n"
-            "A local variable declared INSIDE a loop body has its lifetime reset on each "
-            "iteration, but the CSA's path-sensitive analysis treats each iteration's "
-            "variable as independent — it does NOT model the initialization from a "
-            "previous iteration's function call.\n\n"
-            "If the code pattern is:\n"
-            "```\n"
-            "for(...) {\n"
-            "    Type var;           // declared each iteration\n"
-            "    func(&var, ...);     // writes to var via pointer\n"
-            "}\n"
-            "```\n"
-            "Then `var` IS initialized by the FIRST call (when the function's internal "
-            "state starts in its initial state, e.g. `UTF8_ACCEPT`). On subsequent "
-            "iterations, the function may READ `var` before writing it — but `var` "
-            "retains the value written by the previous call. The CSA may incorrectly "
-            "report `var` as uninitialized.\n\n"
-            "**If the CSA path shows a loop-carried variable read as \"garbage\" but "
-            "the function initialization is guaranteed on the first call, this is "
-            "likely a FALSE POSITIVE.**\n"
-        )
-
-    @staticmethod
-    def _inject_domain_specific_knowledge(reduced_code: str) -> str:
-        """Combine all domain-specific knowledge injections.
-
-        Returns a string to inject into the LLM prompt, or empty string.
-        """
-        parts: list[str] = []
-        union_knowledge = FPAnalyzer._detect_union_type_punning(reduced_code)
-        if union_knowledge:
-            parts.append(union_knowledge)
-        loop_knowledge = FPAnalyzer._detect_loop_initialized_vars(reduced_code)
-        if loop_knowledge:
-            parts.append(loop_knowledge)
-        return "\n".join(parts)
-
-    # ------------------------------------------------------------------
-    # Branch decision formatting for feasibility checks
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # CFG branch filter: build postcondition from segment + parsed events
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Constraints formatting helper
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -2651,14 +2309,6 @@ class FPAnalyzer:
             # Build re-selection prompt  (pc already resolved above)
             candidate_text = self._format_candidates(candidates, postcondition=pc)
 
-            # Gather all preceding segments' established_state for context
-            preceding_parts = []
-            for i, sel in sorted(new_selections.items()):
-                preceding_parts.append(
-                    f"Segment {i}: {self._clip_state(sel.get('established_state', 'N/A'))}"
-                )
-            preceding_context = "\n".join(preceding_parts) if preceding_parts else "(none)"
-
             prompt = SEGMENT_RESELECT_PROMPT.format(
                 segment_index=seg_idx,
                 round=round_num,
@@ -2923,17 +2573,8 @@ class FPAnalyzer:
         """
         parsed = analysis_result.parsed_report
 
-        # Get source context (prefer PDG-sliced reduced code if available)
-        if analysis_result.reduced_code:
-            source_ctx_str = analysis_result.reduced_code
-            logger.info(
-                "Using PDG-sliced code (%d lines) as source context for %s",
-                len(analysis_result.reduced_code.splitlines()),
-                parsed.metadata.function_name,
-            )
-        else:
-            source_ctx = self._source_extractor.extract(parsed)
-            source_ctx_str = source_ctx.format_for_llm(max_lines=80)
+        source_ctx = self._source_extractor.extract(parsed)
+        source_ctx_str = source_ctx.format_for_llm(max_lines=80)
 
         # Pre-index companion .cc/.cpp files so we can annotate path events
         # with their source lines (the event dicts don't carry file_path).
@@ -2979,30 +2620,6 @@ class FPAnalyzer:
             num_events=len(parsed.path_events),
             error_start_info=error_start_info_str,
         )
-
-        # ── Inject slice variable analysis (library calls, members, globals) ──
-        if analysis_result.reduced_code:
-            slice_var_analysis = self._analyze_slice_variables(
-                analysis_result.reduced_code,
-            )
-            if slice_var_analysis:
-                prompt += "\n" + slice_var_analysis + "\n"
-
-        # ── Inject library function API contracts (from static knowledge base) ──
-        if analysis_result.reduced_code:
-            api_contracts = self._format_library_api_contracts(
-                analysis_result.reduced_code,
-            )
-            if api_contracts:
-                prompt += api_contracts + "\n"
-
-        # ── Inject domain-specific knowledge (union type-punning, loop init, etc.) ──
-        if analysis_result.reduced_code:
-            domain_knowledge = self._inject_domain_specific_knowledge(
-                analysis_result.reduced_code,
-            )
-            if domain_knowledge:
-                prompt += domain_knowledge + "\n"
 
         # ── Inject previous conflicts for targeted re-completion ──
         if previous_conflicts:
@@ -3053,6 +2670,9 @@ class FPAnalyzer:
                 "Use them as HARD PRECONDITIONS when completing the path:\n"
                 f"{global_constraints}\n"
             )
+
+        if self._lite_evidence:
+            prompt += "\n\n" + self._lite_evidence + "\n"
 
         # ── Inject the selected feasible-path branch blueprint so the completed
         # concretizations are anchored to THIS specific branch combination (not
@@ -3236,12 +2856,8 @@ class FPAnalyzer:
         Returns:
             C++ source code for a POC test case.
         """
-        # Prefer PDG-sliced reduced code as source context
-        if analysis.reduced_code:
-            source_ctx_str = analysis.reduced_code
-        else:
-            source_ctx = self._source_extractor.extract(analysis.parsed_report)
-            source_ctx_str = source_ctx.format_for_llm(max_lines=60)
+        source_ctx = self._source_extractor.extract(analysis.parsed_report)
+        source_ctx_str = source_ctx.format_for_llm(max_lines=60)
 
         preconditions_str = "\n".join(
             f"  - {p}" for p in completed.preconditions
@@ -3294,6 +2910,15 @@ class FPAnalyzer:
                 "Line numbers in each body are relative to that body, not to "
                 "the file:\n"
                 f"{callee_sources}\n"
+            )
+
+        if self._lite_evidence:
+            prompt += (
+                "\n\n## Lightweight AST / PDG-Lite Evidence\n"
+                "The exact PDG remains authoritative. Use this syntax-derived "
+                "evidence only as a cross-check; mark unresolved calls and "
+                "macro/template-sensitive claims as uncertain.\n"
+                f"{self._lite_evidence}\n"
             )
 
         # Inject the selected feasible-path branch blueprint so the POC drives
@@ -3509,8 +3134,7 @@ class FPAnalyzer:
     ) -> CompletedPath:
         """Parse the LLM's constraint-completion response into a CompletedPath.
 
-        Similar to ``_parse_completed_path()`` but builds its own neutral
-        PathAnalysis rather than relying on a pre-existing gap analysis.
+        Builds the constraint-completion result consumed by POC generation.
         """
         raw_steps = data.get("completed_steps", [])
         steps: list[CompletedStep] = []
@@ -3534,33 +3158,18 @@ class FPAnalyzer:
                     conc = cleaned
 
             steps.append(CompletedStep(
-                original_event_index=s.get("original_event_index"),
                 new_event_kind=s.get("new_event_kind", "event"),
                 description=s.get("description", ""),
                 file_path=s.get("file_path", ""),
                 line_number=int(s["line_number"]) if s.get("line_number") is not None else 0,
-                code_snippet=s.get("code_snippet"),
                 concretization=conc,
             ))
 
-        # Build a neutral PathAnalysis (no gap analysis performed)
-        report_stem = Path(analysis_result.parsed_report.raw_html_path).stem
-        neutral_analysis = PathAnalysis(
-            path_id=report_stem,
-            is_likely_fp=False,
-            gaps=[],
-            confidence=Confidence.HIGH,
-            reasoning=data.get("original_path_summary", ""),
-        )
-
         return CompletedPath(
-            original_path_summary=data.get("original_path_summary", ""),
-            analysis=neutral_analysis,
             completed_steps=steps,
             final_path_summary=data.get("final_path_summary", ""),
             preconditions=data.get("preconditions", []),
             concretized_values=data.get("concretized_values", {}),
-            error_start_is_real=data.get("error_start_is_real", True),
         )
 
     @staticmethod
@@ -3627,74 +3236,6 @@ class FPAnalyzer:
             "- Look for allocated memory assumed to contain garbage\n"
             "- The earliest point where the value could become undefined\n"
         )
-
-    @staticmethod
-    def _format_call_chain(call_chain: dict[str, dict[int, str]]) -> str:
-        """Format call chain source context for the LLM prompt."""
-        if not call_chain:
-            return ""
-
-        parts = ["\n## Call Chain Context (source code around each call site)"]
-        for key, snippets in call_chain.items():
-            if not snippets:
-                continue
-            parts.append(f"\n### {key}")
-            lines = sorted(snippets.keys())
-            for ln in lines:
-                parts.append(f"{ln:>6}: {snippets[ln]}")
-
-        return "\n".join(parts) + "\n"
-
-    def _save_intermediate_json(
-        self, result: AnalysisResult, report_path: str
-    ) -> None:
-        """Save intermediate analysis data to a JSON file for debugging."""
-        report_name = ReportRef.parse(report_path).key
-        output_dir = self._output_dir / report_name
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        # Build a serializable snapshot
-        intermediate = {
-            "report_name": report_name,
-            "metadata": {
-                "bug_type": result.parsed_report.metadata.bug_type,
-                "bug_category": result.parsed_report.metadata.bug_category,
-                "bug_file": result.parsed_report.metadata.bug_file,
-                "bug_line": result.parsed_report.metadata.bug_line,
-                "bug_column": result.parsed_report.metadata.bug_column,
-                "bug_description": result.parsed_report.metadata.bug_description,
-                "function_name": result.parsed_report.metadata.function_name,
-                "path_length": result.parsed_report.metadata.path_length,
-            },
-            "error_start_event": result.parsed_report.error_start_event,
-            "calling_events": result.parsed_report.calling_events,
-            "path_events_annotated": [
-                {
-                    "path_number": e.get("path_number"),
-                    "event_kind": e.get("event_kind"),
-                    "description": e.get("description"),
-                    "line_number": e.get("line_number"),
-                    "branch_condition": e.get("branch_condition"),
-                    "file_path": e.get("file_path"),
-                    "is_error_start": e.get("is_error_start"),
-                    "is_calling_event": e.get("is_calling_event"),
-                    "called_function": e.get("called_function"),
-                }
-                for e in result.parsed_report.path_events
-            ],
-            "annotated_path": result.annotated_path,
-            "call_chain_context": result.call_chain_context,
-        }
-
-        out_path = output_dir / "analysis_intermediate.json"
-        try:
-            out_path.write_text(
-                json.dumps(intermediate, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            logger.info("Intermediate analysis saved to %s", out_path)
-        except Exception as e:
-            logger.warning("Failed to save intermediate JSON: %s", e)
 
     # ------------------------------------------------------------------
     # Classification: TP (real bug) vs FP (false positive)

@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fp_analysis.cfg_cache_set import _method_component
 from fp_analysis.cfg_branch_models import (
@@ -26,6 +27,9 @@ from fp_analysis.cfg_branch_models import (
 )
 from fp_analysis.cfg_models import CFGBlock, CFGFunction
 from fp_analysis.slice_mask import SliceMask
+
+if TYPE_CHECKING:
+    from fp_analysis.pdg_models import FunctionPDG, PDGNode
 
 logger = logging.getLogger(__name__)
 
@@ -499,7 +503,6 @@ class CFGBranchExtractor:
         """
         # ── Phase 1: intra-procedural branch conditions ──
         branch_sources = self._get_branch_sources(pdg)
-        seen_calls: list[tuple[str, int]] = []  # (callee_name, call_line)
         on_path = (
             self._on_path_lines_for_segment(pdg.function_name, line_end)
             if depth == 0 else None
@@ -1517,7 +1520,6 @@ class CFGBranchExtractor:
         # If this element has an ARRAY order position, scan backward
         # from that position to find the first unnumbered leaf.
         if stmt_idx in order:
-            elem_pos = order.index(stmt_idx)
             # Count how many indexed statements are before this one
             # so we can find the corresponding array position
             arr_positions = {}

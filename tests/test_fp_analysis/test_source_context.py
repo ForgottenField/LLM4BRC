@@ -81,27 +81,3 @@ class TestFindFunctionDefinition:
         )
         assert file_path is not None
         assert body is not None
-
-
-class TestExtractCallChain:
-    def test_no_calling_events_in_simple_report(self):
-        """Smoke test: extract_call_chain returns empty for minimal data."""
-        from fp_analysis.models import ParsedReport, ReportMetadata
-
-        parsed = ParsedReport(
-            metadata=ReportMetadata(
-                bug_type="memory_leak",
-                bug_file="test.c",
-                bug_line=10,
-                function_name="test_func",
-                path_length=3,
-            ),
-            path_events=[
-                {"path_number": 1, "event_kind": "event", "description": "test", "line_number": 5},
-            ],
-            source_snippets={},
-            raw_html_path="/dev/null",
-        )
-        extractor = SourceContextExtractor()
-        result = extractor.extract_call_chain(parsed)
-        assert result == {}

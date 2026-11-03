@@ -24,7 +24,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, Optional, Sequence
+from typing import Iterator, Sequence
 
 from .adapters import load_adapters
 from .code_model import SourceCodeModel
@@ -47,6 +47,15 @@ _SELECTOR_SEP = "::"
 #: Characters kept when a selector becomes part of an output filename.
 _UNSAFE_KEY_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _MAX_KEY_LEN = 80
+
+#: Parsed documents are immutable after loading and are shared by work-item
+#: expansion and stage 1.  Source resolution remains per report/finding.
+_DOCUMENT_CACHE: dict[tuple[str, int, int, str | None], ReportModel] = {}
+
+
+def clear_document_cache() -> None:
+    """Clear parsed-document memoisation."""
+    _DOCUMENT_CACHE.clear()
 
 
 @dataclass(frozen=True)
@@ -138,7 +147,7 @@ class LoadedReport:
     """A finding, the document it came from, and the code it points at."""
 
     ref: ReportRef
-    document: ReportDocument
+    document: ReportModel
     finding: BugFinding
     code: SourceCodeModel
     #: Every finding in the document, so a caller can report that it analysed
@@ -192,7 +201,7 @@ class ReportFrontend:
 
     # -- single report -----------------------------------------------------
 
-    def load_document(self, ref: "ReportRef | str | Path") -> ReportDocument:
+    def load_document(self, ref: "ReportRef | str | Path") -> ReportModel:
         """Parse the whole document (every finding) — no source tree needed."""
         ref = ReportRef.parse(ref)
         if not ref.path.exists():
@@ -293,13 +302,25 @@ class ReportFrontend:
 
     # -- internals ---------------------------------------------------------
 
-    def _load_document(self, ref: ReportRef) -> ReportDocument:
+    def _load_document(self, ref: ReportRef) -> ReportModel:
         path = ref.path
+        try:
+            stat = path.stat()
+            cache_key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size,
+                         self.report_format)
+            cached = _DOCUMENT_CACHE.get(cache_key)
+            if cached is not None:
+                return cached
+        except OSError:
+            cache_key = None
         adapter = detect_adapter(path, override=self.report_format)
         logger.debug("parsing %s as %s", path.name, adapter.name)
-        return self.parse_with(adapter.name, path)
+        document = self.parse_with(adapter.name, path)
+        if cache_key is not None:
+            _DOCUMENT_CACHE[cache_key] = document
+        return document
 
-    def parse_with(self, format_name: str, path: Path) -> ReportDocument:
+    def parse_with(self, format_name: str, path: Path) -> ReportModel:
         """Parse *path* with a named adapter (used by ``load_document``/tests)."""
         from .registry import get_adapter
 
@@ -312,7 +333,7 @@ class ReportFrontend:
         return document
 
     @staticmethod
-    def _uri_bases(document: ReportDocument) -> list[str]:
+    def _uri_bases(document: ReportModel) -> list[str]:
         """Extra roots a document names for its relative paths (SARIF)."""
         bases: list[str] = []
         hint = document.source_root_hint
@@ -325,7 +346,7 @@ class ReportFrontend:
         return bases
 
     @staticmethod
-    def _register_embedded(document: ReportDocument, model: SourceCodeModel) -> None:
+    def _register_embedded(document: ReportModel, model: SourceCodeModel) -> None:
         """Hand every file's embedded source in the document to the code model.
 
         Two spellings of the same idea, and the order is the rule:
@@ -352,16 +373,20 @@ class ReportFrontend:
         what lets ``snippet()`` serve the analyzer's own revision rather than
         the local checkout — otherwise the "embedded copy wins" rule silently
         did not apply, which is a change of revision, invisible in the text.
+
+        Embedded source is keyed by the resolved local file, not by the raw
+        section heading.  CSA commonly renders a relative heading and an
+        absolute ``BUGFILE`` for the same file; treating both as separate keys
+        used to trigger the line-only window and mix lines across sections.
         """
         for finding in document.findings:
             for reported, lines in (finding.raw.get("embedded_files") or {}).items():
                 model.add_embedded(reported, lines)
         for reported, lines in (document.metadata.get("embedded_files") or {}).items():
             model.add_embedded(reported, lines)
-        listed = set(model.embedded_files)
         for finding in document.findings:
             reported = finding.location.file
-            if reported and reported not in listed:
+            if reported and not model.has_embedded(reported):
                 model.add_embedded(
                     reported, finding.raw.get("source_snippets") or {},
                 )

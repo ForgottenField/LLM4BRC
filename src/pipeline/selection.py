@@ -18,7 +18,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from fp_analysis.models import CompletedPath, Confidence, PathAnalysis
+from fp_analysis.models import CompletedPath
 from fp_analysis.path_analyzer import FPAnalyzer, PathSpaceExhausted
 from fp_analysis.prompt_templates import parse_poc_unreachable_note
 from fp_analysis.simulation_verifier import SimulationVerifier
@@ -80,33 +80,17 @@ def run_path_selection(
     if extra_preconditions:
         preconditions.extend(extra_preconditions)
     completed = CompletedPath(
-        original_path_summary="",
-        analysis=PathAnalysis(
-            path_id="bug_path",
-            is_likely_fp=False,
-            gaps=[],
-            confidence=Confidence.LOW,
-            reasoning="placeholder for path selection",
-        ),
         completed_steps=[],
         final_path_summary="",
         preconditions=preconditions,
         concretized_values={},
-        error_start_is_real=True,
     )
 
-    # Build a minimal AnalysisResult for the segment-by-segment selector.
-    # _select_single_segment_path accesses: parsed_report, reduced_code,
-    # source_root, annotated_path, call_chain_context, bug_path.
+    # Build the minimal analysis view consumed by segment selection.
     from types import SimpleNamespace
     analysis_result = SimpleNamespace()
     analysis_result.parsed_report = parsed_report
     analysis_result.source_root = str(source_root)
-    analysis_result.reduced_code = ""
-    analysis_result.annotated_path = ""
-    analysis_result.call_chain_context = ""
-    analysis_result.bug_path = None
-
     t0 = time.time()
 
     logger.info("Conflict-driven path selection with shortest-path candidates ...")
@@ -183,30 +167,6 @@ def path_signature(selections):
         )
         parts.append(f"seg{seg_idx}[{b}]")
     return ";".join(parts)
-
-
-def _blocked_candidate_map(selections):
-    """Per-segment ``{segment_index: selected_candidate}`` for a selection.
-
-    Used alongside ``path_signature`` so a blocked path can be re-avoided
-    DETERMINISTICALLY (by excluding the chosen candidate indices from the next
-    selection), not just via the advisory prompt hint.
-
-    FORCED segments are excluded: a segment with ``num_candidates <= 1`` (or
-    linear, carrying no ``selected_candidate``) has exactly one path that every
-    whole-path must pass through.  Blocking it would eliminate *every*
-    whole-path and yield a premature FP, without ever checking whether the
-    other (free) segments can combine to reach the bug.  Forced segments are
-    fixed constraints of the search, never blocked — FP for them must come from
-    cross-segment conflict (or bounded exploration of the free segments), not
-    from "blocking" the only path.
-    """
-    return {
-        sel.get("segment_index"): sel.get("selected_candidate")
-        for sel in (selections or [])
-        if sel.get("selected_candidate")
-        and (sel.get("num_candidates", 0) or 0) > 1
-    }
 
 
 def _last_round_reason(sim_res) -> str:
@@ -288,7 +248,8 @@ def _no_path_verdict(path_evidence: str) -> tuple[str, str] | None:
 
 
 def _verify_path(analyzer, report_path, source_root, out_path, report_stem,
-                 selections=None):
+                 selections=None, parsed_report=None, loaded=None,
+                 poc_output_dir=None):
     """7a–7e: generate a POC (LLM-only, no real compile), LLM-audit its
     correctness, and LLM-simulate execution with a feedback loop.
 
@@ -310,9 +271,16 @@ def _verify_path(analyzer, report_path, source_root, out_path, report_stem,
     analyzer.ensure_project_name(source_root.name)
 
     try:
-        # 7a: Parse report + extract source context via analyzer
+        # 7a: Extract source context from the stage-1 report view.
         t0 = time.time()
-        analysis_poc = analyzer.analyze(report_path, str(source_root))
+        if parsed_report is not None:
+            analysis_poc = analyzer.analyze_report_view(
+                parsed_report,
+                report_ref=loaded.ref if loaded is not None else report_path,
+            )
+        else:
+            # Compatibility path for direct callers and test doubles.
+            analysis_poc = analyzer.analyze(report_path, str(source_root))
         print(f"  7a. Source context extracted [{time.time()-t0:.1f}s]")
 
         # 7b: Constraint completion → CompletedPath.  Anchored to the selected
@@ -354,7 +322,9 @@ def _verify_path(analyzer, report_path, source_root, out_path, report_stem,
         if poc_code:
             print(f"      POC code: {len(poc_code.splitlines())} lines — "
                   f"LLM-generated, correctness audited during simulation")
-            poc_path = out_path.parent / f"poc_{report_stem}.cpp"
+            poc_dir = Path(poc_output_dir) if poc_output_dir else out_path.parent
+            poc_dir.mkdir(parents=True, exist_ok=True)
+            poc_path = poc_dir / f"poc_{report_stem}.cpp"
             poc_path.write_text(poc_code)
             print(f"      POC saved to: {poc_path}")
         else:

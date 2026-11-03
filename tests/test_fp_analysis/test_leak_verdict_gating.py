@@ -84,6 +84,10 @@ class _StubAnalyzer:
     def domain_facts_text(self):
         return self._domain_facts_text
 
+    @property
+    def lite_evidence(self):
+        return ""
+
     parse_json_response = staticmethod(FPAnalyzer._parse_json_response)
     parse_json_response_tolerant = staticmethod(
         FPAnalyzer._parse_json_response_tolerant
