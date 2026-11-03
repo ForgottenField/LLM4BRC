@@ -4,14 +4,14 @@ This module used to *be* the report parser: the regexes that index a CSA
 document, the doc-index that attributes an event to the file section it sits in,
 the annotation pass, and the two public entry points (``FPReportParser.parse``
 and ``parse_to_bug_path``).  That code now lives in
-``llm_client.report_frontend.adapters.csa_html`` and is joined to the pipeline
-by ``llm_client.fp_analysis.report_bridge``.
+``report_frontend.adapters.csa_html`` and is joined to the pipeline
+by ``fp_analysis.report_bridge``.
 
 What remains here is the interface the rest of the repository imports.  It is a
 shim on purpose rather than a rename: ``FPReportParser`` is referenced by the
 dependency builder, several tools, and the whole test suite, and a formats
 refactor is not a good moment to also churn every call site.  New code should
-use ``llm_client.report_frontend`` directly.
+use ``report_frontend`` directly.
 
 ``parse()``/``parse_to_bug_path()`` keep working for a report path, and *also*
 accept a ``ReportRef`` (``<path>[::<finding>]``) so the CLI can hand the same
@@ -100,7 +100,7 @@ def resolve_report_source_file(
 ) -> Path | None:
     """Resolve a report's source path to a local file (legacy helper).
 
-    Delegates to :class:`~llm_client.report_frontend.code_model.SourceCodeModel`,
+    Delegates to :class:`~report_frontend.code_model.SourceCodeModel`,
     whose ladder is the union of the strategies this function used to try
     (direct, known build prefix, basename) plus relative-path and path-suffix
     matching.  ``file_name_hint`` keeps its old meaning: try the hint's

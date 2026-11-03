@@ -9,7 +9,7 @@ Tests the integration points described in the postcondition-cfg-branch-filter de
 from __future__ import annotations
 
 import pytest
-from llm_client.fp_analysis.cfg_branch_models import (
+from fp_analysis.cfg_branch_models import (
     CFGBranchNode,
     CFGBranchTree,
     Postcondition,
@@ -181,7 +181,7 @@ class TestBuildPostcondition:
     @staticmethod
     def _build_postcondition(segment, parsed) -> Postcondition:
         """Same logic as FPAnalyzer._build_postcondition will have."""
-        from llm_client.fp_analysis.cfg_branch_models import Postcondition
+        from fp_analysis.cfg_branch_models import Postcondition
 
         if segment.control_event_number is not None:
             for evt in parsed.path_events:
@@ -235,7 +235,7 @@ class TestStep34Integration:
 
         The integration should not crash when no CFG data is available.
         """
-        from llm_client.fp_analysis.cfg_branch_models import Postcondition
+        from fp_analysis.cfg_branch_models import Postcondition
         from fp_analysis.cfg_models import SegmentInfo
 
         # Verify that even without cfg_cache, segment processing works
@@ -265,7 +265,7 @@ class TestStep34Integration:
         Verifies the _apply_branch_tags_to_mask function signature
         exists and processes contradictory nodes.
         """
-        from llm_client.fp_analysis.cfg_branch_models import (
+        from fp_analysis.cfg_branch_models import (
             BranchTag,
             CFGBranchNode,
             CFGBranchTree,

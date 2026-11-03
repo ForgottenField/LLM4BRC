@@ -19,7 +19,7 @@ enumeration bound, and (c) the deliberately conservative corners.
 
 import random
 
-from llm_client.fp_analysis.combination_enum import iter_combinations
+from fp_analysis.combination_enum import iter_combinations
 from fp_analysis.cause_invariance import (
     _iter_decisions,
     branch_writes_pointer,
@@ -301,7 +301,7 @@ def test_answer_is_not_limited_by_the_combination_enumeration_bound():
     difference parked in the highest-index candidates it would have reported
     "invariant".  The per-dimension scan reads every candidate, so it sees it.
     """
-    from llm_client.fp_analysis.combination_enum import _ENUM_LIMIT
+    from fp_analysis.combination_enum import _ENUM_LIMIT
 
     n = 60
     assert n ** 3 > _ENUM_LIMIT

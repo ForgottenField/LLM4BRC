@@ -4,7 +4,7 @@
 deterministic whole-path combination); ``_verify_path`` is stage 10 (generate a
 POC, audit it, simulate execution, feed the failures back).  Neither owns the
 report-level verdict: ``_verify_path`` returns a ``conclusion`` and the caller's
-exploration loop (see :mod:`~llm_client.fp_analysis.pipeline.exploration`)
+exploration loop (see :mod:`~pipeline.exploration`)
 decides TP / FP / UNKNOWN from it.
 
 The verdict *prose* lives here too because it is a property of the stage that
@@ -25,7 +25,7 @@ from fp_analysis.simulation_verifier import SimulationVerifier
 from fp_analysis.slice_mask import SliceMask
 
 from pipeline.layout import get_logger
-from pipeline import stage_step
+from pipeline.stages import stage_step
 
 logger = get_logger()
 
@@ -115,7 +115,7 @@ def run_path_selection(
     try:
         if combo is not None and path_space is not None:
             # Deterministic whole-path combination: build + conflict-check only.
-            selections = analyzer._select_combination_segments(
+            selections = analyzer.select_combination_segments(
                 analysis_result, completed, segments, path_space, combo,
             )
             if selections is None:
@@ -124,7 +124,7 @@ def run_path_selection(
             # LLM-driven selection (attempt-1 seed).  No blocked_candidates:
             # whole-path combination enumeration (in the caller) replaces the
             # per-segment candidate blocking that over-pruned.
-            selections = analyzer._select_feasible_path_segments(
+            selections = analyzer.select_feasible_path_segments(
                 analysis_result, completed, slice_mask,
                 max_rounds=3,
                 segments=segments,
@@ -307,9 +307,7 @@ def _verify_path(analyzer, report_path, source_root, out_path, report_stem,
     poc_path = None
     final_reason = None
 
-    # HACK: set project_name to enable project-specific compile config
-    if not analyzer._project_name:
-        analyzer._project_name = source_root.name
+    analyzer.ensure_project_name(source_root.name)
 
     try:
         # 7a: Parse report + extract source context via analyzer
@@ -321,7 +319,7 @@ def _verify_path(analyzer, report_path, source_root, out_path, report_stem,
         # feasible path so a different selection yields a different POC (P1).
         t0 = time.time()
         print("  7b. Running constraint completion (LLM) ...")
-        completed_path = analyzer._complete_constraints(
+        completed_path = analyzer.complete_constraints(
             analysis_poc, selected_branches=selections,
         )
         print(f"  7b. Constraint completion done: "

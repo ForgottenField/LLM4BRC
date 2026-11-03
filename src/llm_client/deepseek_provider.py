@@ -36,16 +36,10 @@ class DeepSeekProvider(LLMProvider):
         max_tokens = request.max_tokens or self._config.default_max_tokens
         timeout = request.timeout or self._config.default_timeout
 
-        # Build messages list: use explicit messages when provided, otherwise
-        # wrap the single prompt string as a user message.
-        messages = request.messages
-        if not messages:
-            messages = [{"role": "user", "content": request.prompt}]
-
         try:
             response = self._client.chat.completions.create(
                 model=model,
-                messages=messages,
+                messages=request.normalized_messages(),
                 temperature=request.temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,

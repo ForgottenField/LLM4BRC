@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 # Repo root — the cache dir is relative to CWD in ``_cfg_cache_path``; anchor
 # lookups there too so behaviour does not depend on the working directory.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Extensions that can be a translation unit on their own.  Everything else
 # (headers, system includes) can appear in a report's file sections but can

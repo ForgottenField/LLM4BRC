@@ -23,7 +23,7 @@ from typing import Optional
 
 #: Version of the ``pdg_<project>.json`` artifact this code understands.  It
 #: MUST equal ``Metadata["version"]`` in
-#: ``src/llm_client/csa_analysis/pdg/PDGBuilder.cpp`` — that constant is the
+#: ``src/csa_analysis/pdg/PDGBuilder.cpp`` — that constant is the
 #: builder's own statement of which graph shape it emits, and the two are
 #: compared by ``tools/build_project_deps.py`` (before and after a build) and by
 #: ``run_path_selection._resolve_paths`` (before the pipeline touches a report).

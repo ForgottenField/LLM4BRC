@@ -18,8 +18,8 @@ import json
 from unittest.mock import MagicMock, patch
 
 from llm_client.base import LLMConfig, LLMRequest, LLMResponse
-from llm_client.fp_analysis.path_analyzer import FPAnalyzer
-from llm_client.fp_analysis.simulation_verifier import (
+from fp_analysis.path_analyzer import FPAnalyzer
+from fp_analysis.simulation_verifier import (
     SimulationResult,
     SimulationVerifier,
     _SIMULATION_MAX_TOKENS,
@@ -95,6 +95,20 @@ class _StubAnalyzer:
     # the refine loop extracts a C++ file out of the refined reply
     _extract_code = staticmethod(FPAnalyzer._extract_code)
 
+    @property
+    def project_name(self):
+        return self._project_name
+
+    @property
+    def domain_facts_text(self):
+        return self._domain_facts_text
+
+    parse_json_response = staticmethod(FPAnalyzer._parse_json_response)
+    parse_json_response_tolerant = staticmethod(
+        FPAnalyzer._parse_json_response_tolerant
+    )
+    extract_code = staticmethod(FPAnalyzer._extract_code)
+
     def _call_llm(self, system_prompt, user_prompt, max_tokens=None):
         self.budgets.append(max_tokens)
         return self._raw
@@ -104,6 +118,18 @@ class _StubAnalyzer:
 
     def _extract_callee_sources_for_prompt(self, parsed):
         return ""
+
+    def call_llm(self, system_prompt, user_prompt, max_tokens=None):
+        return self._call_llm(system_prompt, user_prompt, max_tokens=max_tokens)
+
+    def extract_callee_sources_for_prompt(self, parsed):
+        return self._extract_callee_sources_for_prompt(parsed)
+
+    def format_selected_branch_blueprint(self, selections):
+        return self._format_selected_branch_blueprint(selections)
+
+    def extract_source_context(self, parsed, max_lines=80):
+        return "(source context unavailable)"
 
 
 # ── 1. finish_reason reaches the caller ──────────────────────────────────────
@@ -259,7 +285,7 @@ class TestSparseStepAudit:
     """
 
     def _result(self, data: dict):
-        from llm_client.fp_analysis.simulation_verifier import SimulationResult
+        from fp_analysis.simulation_verifier import SimulationResult
 
         # the real renderer: `_fake_analysis()`'s report has exactly 2 steps
         steps = SimulationVerifier(_StubAnalyzer("{}"))._csa_step_rows(_fake_analysis())
@@ -439,20 +465,20 @@ class TestSelectedCandidateCoercion:
     """
 
     def test_unusable_values_fall_back_to_the_first_candidate(self):
-        from llm_client.fp_analysis.path_analyzer import _selected_candidate_index
+        from fp_analysis.path_analyzer import _selected_candidate_index
 
         for value in (None, "2", "candidate 2", "", True, False, 2.5, [], {}):
             assert _selected_candidate_index(value, 5, "t") == 1, value
 
     def test_usable_values_pass_through(self):
-        from llm_client.fp_analysis.path_analyzer import _selected_candidate_index
+        from fp_analysis.path_analyzer import _selected_candidate_index
 
         assert _selected_candidate_index(3, 5, "t") == 3
         assert _selected_candidate_index(3.0, 5, "t") == 3
         assert _selected_candidate_index(5, 5, "t") == 5
 
     def test_out_of_range_is_reported_not_silently_clamped(self, caplog):
-        from llm_client.fp_analysis.path_analyzer import _selected_candidate_index
+        from fp_analysis.path_analyzer import _selected_candidate_index
 
         with caplog.at_level("WARNING"):
             assert _selected_candidate_index(0, 5, "t") == 1

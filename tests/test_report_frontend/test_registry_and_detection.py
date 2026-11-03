@@ -15,8 +15,9 @@ import pytest
 
 from report_frontend.errors import (
     ReportFrontendError,
-    UnsupportedReportFormat, registry,
+    UnsupportedReportFormat,
 )
+from report_frontend import registry
 from report_frontend.registry import (
     detect_adapter,
     finding_for,

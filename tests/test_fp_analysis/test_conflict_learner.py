@@ -6,7 +6,7 @@ Phase 2 of the shortest-path selection + conflict-driven learning design.
 from __future__ import annotations
 
 import pytest
-from llm_client.fp_analysis.cfg_branch_models import BranchDecision
+from fp_analysis.cfg_branch_models import BranchDecision
 
 
 # ─── Conflict Models tests ─────────────────────────────────────────────────────

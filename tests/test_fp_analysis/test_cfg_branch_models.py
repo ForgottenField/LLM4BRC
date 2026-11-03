@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from llm_client.fp_analysis.cfg_branch_models import (
+from fp_analysis.cfg_branch_models import (
     BranchTag,
     CFGBranchNode,
     CFGBranchTree,

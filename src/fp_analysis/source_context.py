@@ -6,7 +6,7 @@ and extract code snippets around key locations for LLM analysis.
 **The report is the index, the code model is the reader.**  Everything this
 module does is "which file does the report mean, and what does it say"; the
 first half is a resolution question and the second a read, and both belong to
-the report's :class:`~llm_client.report_frontend.code_model.SourceCodeModel` —
+the report's :class:`~report_frontend.code_model.SourceCodeModel` —
 the single ladder and the single reader the rest of the pipeline converged on.
 The extractor keeps its own heuristics for what is *inside* a file (the
 definition-vs-call-site scanner of :meth:`SourceContextExtractor.extract_function_body`

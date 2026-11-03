@@ -11,9 +11,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from llm_client.fp_analysis.cfg_feasibility import extract_assumptions_from_events
+from fp_analysis.cfg_feasibility import extract_assumptions_from_events
 from fp_analysis.cfg_models import AssumptionFact
-from llm_client.fp_analysis.path_analyzer import FPAnalyzer
+from fp_analysis.path_analyzer import FPAnalyzer
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +217,7 @@ class TestCheckConstraintConflict:
         hard_constraints = ["blockLength_ > 0"]
         # Mock extraction to return empty
         with patch(
-            "llm_client.fp_analysis.path_analyzer.extract_assumptions_from_events",
+            "fp_analysis.path_analyzer.extract_assumptions_from_events",
             return_value=[],
         ):
             conflict = mock_analyzer._check_constraint_conflict(
@@ -242,7 +242,7 @@ class TestCheckConstraintConflict:
 
         hard_constraints = ["blockLength_ > 0"]
         with patch(
-            "llm_client.fp_analysis.path_analyzer.extract_assumptions_from_events",
+            "fp_analysis.path_analyzer.extract_assumptions_from_events",
             return_value=[fact],
         ):
             conflict = mock_analyzer._check_constraint_conflict(
@@ -268,7 +268,7 @@ class TestCheckConstraintConflict:
 
         hard_constraints = ["blockLength_ > 0"]
         with patch(
-            "llm_client.fp_analysis.path_analyzer.extract_assumptions_from_events",
+            "fp_analysis.path_analyzer.extract_assumptions_from_events",
             return_value=[fact],
         ):
             conflict = mock_analyzer._check_constraint_conflict(

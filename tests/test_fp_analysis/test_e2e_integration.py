@@ -16,7 +16,7 @@ import tempfile
 import pytest
 
 from fp_analysis.cfg_branch_extractor import CFGBranchExtractor
-from llm_client.fp_analysis.cfg_branch_models import Postcondition
+from fp_analysis.cfg_branch_models import Postcondition
 from fp_analysis.cfg_models import CFGBlock, CFGFunction
 from fp_analysis.condition_extractor import extract_condition
 from fp_analysis.slice_mask import SliceMask

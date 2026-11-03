@@ -11,7 +11,7 @@ Step 6).
 The stage drivers here are stages 1-5 (parsing, segmentation, slicing,
 assumption state, branch filter).  They are deterministic apart from stage 4,
 which the caller supplies an analyzer for.  Stages 6-10 live in
-:mod:`llm_client.fp_analysis.pipeline.selection`, ``exploration`` and
+:mod:`pipeline.selection`, ``exploration`` and
 ``runner`` — the parts that own the report-level verdict.
 """
 
@@ -165,6 +165,9 @@ def infer_entry_function(sdg, parsed_report) -> str:
             best[1], bug_name, bug_line,
         )
     return best[1]
+
+
+_infer_entry_function = infer_entry_function
 
 
 def segment_path(parsed, sdg=None, source_root=None):

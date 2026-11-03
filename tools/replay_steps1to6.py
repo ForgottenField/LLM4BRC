@@ -27,7 +27,7 @@ from run_path_selection import (  # noqa: E402
     CFGCacheSet, resolve_source_file_for_cfg, build_slice_mask,
     load_sdg, parse_report, run_branch_filter,
 )
-from llm_client.fp_analysis.cfg_feasibility import segment_path  # noqa: E402
+from fp_analysis.cfg_feasibility import segment_path  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 

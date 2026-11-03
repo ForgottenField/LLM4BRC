@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import pytest
 
-from llm_client.fp_analysis.cfg_branch_models import CFGBranchNode
-from llm_client.fp_analysis import report_consistency as rc
+from fp_analysis.cfg_branch_models import CFGBranchNode
+from fp_analysis import report_consistency as rc
 
 COND = 'h == fourcc("IHNs")'
 FN = "faiss::read_index"

@@ -18,8 +18,8 @@ has to clear the highest bar:
 import json
 from unittest.mock import MagicMock
 
-from llm_client.fp_analysis.path_analyzer import FPAnalyzer
-from llm_client.fp_analysis.simulation_verifier import (
+from fp_analysis.path_analyzer import FPAnalyzer
+from fp_analysis.simulation_verifier import (
     SimulationResult,
     SimulationVerifier,
     _normalize_leak_chain,
@@ -76,6 +76,20 @@ class _StubAnalyzer:
     )
     _extract_code = staticmethod(FPAnalyzer._extract_code)
 
+    @property
+    def project_name(self):
+        return self._project_name
+
+    @property
+    def domain_facts_text(self):
+        return self._domain_facts_text
+
+    parse_json_response = staticmethod(FPAnalyzer._parse_json_response)
+    parse_json_response_tolerant = staticmethod(
+        FPAnalyzer._parse_json_response_tolerant
+    )
+    extract_code = staticmethod(FPAnalyzer._extract_code)
+
     def _call_llm(self, system_prompt, user_prompt, max_tokens=None):
         self.budgets.append(max_tokens)
         return self._raw
@@ -85,6 +99,18 @@ class _StubAnalyzer:
 
     def _extract_callee_sources_for_prompt(self, parsed):
         return ""
+
+    def call_llm(self, system_prompt, user_prompt, max_tokens=None):
+        return self._call_llm(system_prompt, user_prompt, max_tokens=max_tokens)
+
+    def extract_callee_sources_for_prompt(self, parsed):
+        return self._extract_callee_sources_for_prompt(parsed)
+
+    def format_selected_branch_blueprint(self, selections):
+        return self._format_selected_branch_blueprint(selections)
+
+    def extract_source_context(self, parsed, max_lines=80):
+        return "(source context unavailable)"
 
 
 def _reply(conform: bool, chain: dict | None = None, triggered: bool = False) -> str:

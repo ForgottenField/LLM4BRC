@@ -33,7 +33,7 @@ class OpenAIProvider(LLMProvider):
         try:
             response = self._client.chat.completions.create(
                 model=model,
-                messages=[{"role": "user", "content": request.prompt}],
+                messages=request.normalized_messages(),
                 temperature=request.temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,

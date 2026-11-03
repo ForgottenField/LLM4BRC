@@ -14,14 +14,15 @@ side.
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
 from fp_analysis.models import code_model_of
 from report_frontend import ReportRef
 
+from pipeline.io import write_json_atomic
 from pipeline.layout import REPO_ROOT, get_logger
+from pipeline.schemas import ReportIdentity, ResultDocument
 
 logger = get_logger()
 
@@ -39,7 +40,7 @@ def report_key(report_path: Path | ReportRef) -> str:
     return Path(report_path).stem
 
 
-def report_fields(report_ref: ReportRef) -> dict:
+def report_fields(report_ref: ReportRef) -> ReportIdentity:
     """The identifying fields every result JSON carries.
 
     ``report`` is the file's name for an unambiguous single-finding run — so
@@ -112,7 +113,9 @@ def report_out_path(args, report_path: Path | ReportRef) -> Path:
     return out if getattr(args, "report", None) else out / default_name
 
 
-def _write_output(out_path: Path, output: dict, total_start: float) -> None:
+def _write_output(
+    out_path: Path, output: ResultDocument, total_start: float,
+) -> None:
     """Write a result JSON and print the two lines every exit prints.
 
     The single writer for all three exits (stage 6, stage 7, full path): they
@@ -120,6 +123,6 @@ def _write_output(out_path: Path, output: dict, total_start: float) -> None:
     "``Full results saved to:`` then ``Total pipeline time:``" was an invariant
     maintained by hand.
     """
-    out_path.write_text(json.dumps(output, indent=2, default=str))
+    write_json_atomic(out_path, output)
     print(f"\nFull results saved to: {out_path}")
     print(f"Total pipeline time: {time.time() - total_start:.1f}s")

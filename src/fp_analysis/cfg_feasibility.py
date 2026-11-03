@@ -1380,6 +1380,9 @@ def _resolve_local_path(p: Path | str, source_root: str | None) -> Path | None:
     return None
 
 
+_resolve_source_file_for_cfg = resolve_source_file_for_cfg
+
+
 def _build_pdg_fn_index(
     sdg: "SDG | None",
     source_root: str | None,

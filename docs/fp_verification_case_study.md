@@ -238,8 +238,8 @@ TEST(XlogEveryNThreadEntryTest, UninitializedThreadLocalMap) {
 
 ## 附：本案例分析相关的产出文件
 
-- `src/llm_client/fp_analysis/simulation_verifier.py` —— 模拟执行 + 反馈循环模块
-- `src/llm_client/fp_analysis/prompt_templates.py` —— `SIMULATION_*` / `SIMULATION_REFINE_*` 提示词
+- `src/fp_analysis/simulation_verifier.py` —— 模拟执行 + 反馈循环模块
+- `src/fp_analysis/prompt_templates.py` —— `SIMULATION_*` / `SIMULATION_REFINE_*` 提示词
 - `run_path_selection.py` —— 验证阶段接入模拟环节，并在反馈判定未触发时翻转 verdict 为 FP
 - `output/path_selection_report-MemoryTest.cpp-Destroy-2-1.json`、`output/path_selection_report-XlogTest.cpp-xlogEveryNThreadEntry-20-1.json`
 - `output/poc_report-XlogTest.cpp-xlogEveryNThreadEntry-20-1.cpp`（XlogTest POC，编译通过）

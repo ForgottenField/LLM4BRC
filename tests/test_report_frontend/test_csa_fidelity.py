@@ -10,7 +10,7 @@ So this file does not test the *adapter*.  It pins the **rendered legacy
 output**:
 
 * :class:`TestGoldenOutput` compares against literals captured from the
-  pre-frontend parser (``git show HEAD:src/llm_client/fp_analysis/html_parser.py``)
+  pre-frontend parser (``git show HEAD:src/fp_analysis/html_parser.py``)
   run over the in-repo fixture — a byte-level regression baseline, checked in
   because the parser it came from no longer exists to re-derive it;
 * :class:`TestCorpusInvariants` states the *contract* the downstream stages
@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from llm_client.fp_analysis.report_bridge import (
+from fp_analysis.report_bridge import (
     _SNIPPET_RADIUS,
     to_bug_path,
     to_parsed_report,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from llm_client.fp_analysis.source_context import SourceContextExtractor
+from fp_analysis.source_context import SourceContextExtractor
 
 
 @pytest.fixture
@@ -86,7 +86,7 @@ class TestFindFunctionDefinition:
 class TestExtractCallChain:
     def test_no_calling_events_in_simple_report(self):
         """Smoke test: extract_call_chain returns empty for minimal data."""
-        from llm_client.fp_analysis.models import ParsedReport, ReportMetadata
+        from fp_analysis.models import ParsedReport, ReportMetadata
 
         parsed = ParsedReport(
             metadata=ReportMetadata(

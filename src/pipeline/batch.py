@@ -9,15 +9,15 @@ and processes them one at a time.
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
 from report_frontend import ReportFrontend, ReportRef
 
 from pipeline.artifacts import report_fields
+from pipeline.io import write_json_atomic
 from pipeline.layout import REPO_ROOT, get_logger
-from pipeline import process_report
+from pipeline.outcomes import Verdict
 
 logger = get_logger()
 
@@ -33,6 +33,10 @@ def is_report_file(path: Path) -> bool:
     if name.endswith((".sarif", ".sarif.json")):
         return True
     return path.suffix == ".html" and path.name.startswith("report-")
+
+
+# Compatibility names used by the historical evaluation scripts.
+_is_report_file = is_report_file
 
 
 def collect_reports(args):
@@ -73,6 +77,9 @@ def collect_reports(args):
     return frontend.expand(found)
 
 
+_collect_reports = collect_reports
+
+
 def run_batch(args, reports) -> None:
     """Process every work item in *reports*, then print and save the aggregate.
 
@@ -80,6 +87,10 @@ def run_batch(args, reports) -> None:
     one's source root / PDG, so a misinvocation has failed in seconds rather than
     after tens of minutes of unrelated work.
     """
+    # Imported at the call boundary to keep the package facade acyclic:
+    # ``pipeline.__init__`` re-exports both this module and the runner.
+    from pipeline.runner import process_report
+
     print(f"Processing {len(reports)} report(s)...\n")
 
     aggregate = []
@@ -104,12 +115,12 @@ def run_batch(args, reports) -> None:
                     (out.get("path_space", {}) or {}).get("whole_path_bound", 0)),
             })
         except Exception as e:
-            logger.error("Report %s failed: %s", rp, e, exc_info=True)
+            logger.error("Report %s failed: %s", rp.key, e, exc_info=True)
             aggregate.append({
                 **report_fields(rp),
                 "project": "",
                 "bug_type": "",
-                "verdict": "ERROR",
+                "verdict": Verdict.ERROR.value,
                 "verdict_step": "",
                 "verdict_reason": f"运行异常: {str(e)[:80]}",
                 "elapsed_sec": round(time.time() - t_report, 1),
@@ -144,9 +155,9 @@ def run_batch(args, reports) -> None:
     # Write aggregate JSON
     agg_out = (Path(args.batch_summary) if args.batch_summary
                else REPO_ROOT / "output" / "batch_summary.json")
-    agg_out.parent.mkdir(parents=True, exist_ok=True)
-    agg_out.write_text(json.dumps({
-        "total": len(aggregate), "tp": n_tp, "fp": n_fp, "error": n_err,
+    write_json_atomic(agg_out, {
+        "total": len(aggregate), "tp": n_tp, "fp": n_fp,
+        "unknown": n_unknown, "error": n_err,
         "results": aggregate,
-    }, indent=2, default=str))
+    })
     print(f"\nBatch summary saved to: {agg_out}")

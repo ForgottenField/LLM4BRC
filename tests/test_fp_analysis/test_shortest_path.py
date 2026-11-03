@@ -5,7 +5,7 @@ shortest-path selection + conflict-driven learning.
 from __future__ import annotations
 
 import pytest
-from llm_client.fp_analysis.cfg_branch_models import (
+from fp_analysis.cfg_branch_models import (
     BranchTag,
     CFGBranchNode,
     CFGBranchTree,
@@ -77,7 +77,7 @@ class TestCalleePathCache:
           S_12_3 (binary_op) → control_dep source for S_15_5
           S_15_5 (return) → data_dep on S_10_5, control_dep on S_12_3
         """
-        from llm_client.fp_analysis.shortest_path import CalleePathCache
+        from fp_analysis.shortest_path import CalleePathCache
 
         nodes = [
             _make_pdg_node("S_0_0", "param", "x", source_line=0),
@@ -118,7 +118,7 @@ class TestCalleePathCache:
         The key is that the long path goes through intermediate callees that
         must be traversed, not bypassed via direct def-use to the entry.
         """
-        from llm_client.fp_analysis.shortest_path import CalleePathCache
+        from fp_analysis.shortest_path import CalleePathCache
 
         nodes = [
             _make_pdg_node("S_0_0", "param", "x", source_line=0),
@@ -173,7 +173,7 @@ class TestCalleePathCache:
 
     def test_unknown_function_returns_default(self):
         """When callee PDG is not in SDG, get_min_stmts returns conservative default."""
-        from llm_client.fp_analysis.shortest_path import CalleePathCache
+        from fp_analysis.shortest_path import CalleePathCache
 
         sdg = SDG()
         cache = CalleePathCache(sdg)
@@ -184,7 +184,7 @@ class TestCalleePathCache:
 
     def test_empty_pdg_returns_default(self):
         """When callee PDG has no nodes, get_min_stmts returns 1."""
-        from llm_client.fp_analysis.shortest_path import CalleePathCache
+        from fp_analysis.shortest_path import CalleePathCache
 
         pdg = _make_pdg("empty_fn", [])
         sdg = SDG(pdgs={pdg.function_name: pdg})
@@ -196,7 +196,7 @@ class TestCalleePathCache:
 
     def test_auxiliary_nodes_excluded(self):
         """Recovery and param nodes should be excluded from statement count."""
-        from llm_client.fp_analysis.shortest_path import CalleePathCache
+        from fp_analysis.shortest_path import CalleePathCache
 
         nodes = [
             _make_pdg_node("S_0_0", "param", "x", source_line=0),
@@ -231,7 +231,7 @@ class TestShortestPathComputer:
 
     def test_linear_segment_zero_branches(self):
         """Segment with 0 branches returns single empty candidate."""
-        from llm_client.fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
+        from fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
 
         tree = CFGBranchTree(
             segment_index=0,
@@ -254,7 +254,7 @@ class TestShortestPathComputer:
 
     def test_contradictory_branch_pruned(self):
         """BFS skips branches tagged as contradictory."""
-        from llm_client.fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
+        from fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
 
         # Build tree with 1 contradictory branch
         branch = CFGBranchNode(
@@ -287,7 +287,7 @@ class TestShortestPathComputer:
 
     def test_consistent_branch_auto_confirmed(self):
         """BFS auto-confirms consistent-tagged branches (only explores confirmed direction)."""
-        from llm_client.fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
+        from fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
 
         branch = CFGBranchNode(
             node_id="B10_taken",
@@ -320,7 +320,7 @@ class TestShortestPathComputer:
 
     def test_insufficient_info_explores_both(self):
         """For insufficient_info branches, both true/false sides are explored."""
-        from llm_client.fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
+        from fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
 
         branch = CFGBranchNode(
             node_id="B15_taken",
@@ -351,7 +351,7 @@ class TestShortestPathComputer:
 
     def test_metric_ordering_s_before_c_before_v(self):
         """Candidates are sorted by S↑ → C↑ → V↑."""
-        from llm_client.fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache, PathMetrics
+        from fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache, PathMetrics
 
         # We'll verify that PathMetrics ordering works correctly
         m1 = PathMetrics(S=3, C=1, V=2)
@@ -368,7 +368,7 @@ class TestShortestPathComputer:
 
     def test_cross_procedure_stmts_added(self):
         """Callee statement count from CalleePathCache is added to path metrics."""
-        from llm_client.fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
+        from fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
 
         # Set up callee with known statement count
         callee_nodes = [
@@ -414,7 +414,7 @@ class TestShortestPathComputer:
 
     def test_topk_limiting(self):
         """compute_topk returns at most k candidates."""
-        from llm_client.fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
+        from fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
 
         # Create 2 insufficient_info branches → 2^2 = 4 potential paths
         branches = []
@@ -447,7 +447,7 @@ class TestShortestPathComputer:
 
     def test_untagged_branch_explored_as_insufficient(self):
         """Untagged branches (no BranchTag) are treated as insufficient_info."""
-        from llm_client.fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
+        from fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
 
         branch = CFGBranchNode(
             node_id="B5_taken",
@@ -478,7 +478,7 @@ class TestShortestPathComputer:
 
     def test_nested_branches(self):
         """BFS handles nested branch trees correctly."""
-        from llm_client.fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
+        from fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
 
         # Outer branch (insufficient) → inner branch (consistent)
         inner = CFGBranchNode(
@@ -518,7 +518,7 @@ class TestShortestPathComputer:
 
     def test_all_branches_contradictory(self):
         """When all branches are contradictory, return single empty path."""
-        from llm_client.fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
+        from fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
 
         branch = CFGBranchNode(
             node_id="B5_taken",

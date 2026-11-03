@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from llm_client.fp_analysis.domain_facts import (
+from fp_analysis.domain_facts import (
     domain_facts_from_lines,
     extract_domain_facts,
     fold_rhs,
@@ -225,7 +225,7 @@ def test_real_report_snippets_recover_h_domain():
         / "FP" / "report-index_read.cpp-read_VectorTransform-35-1.html"
     if not rpt.exists():
         return  # report checkout not present here; skip silently.
-    from llm_client.fp_analysis.html_parser import FPReportParser
+    from fp_analysis.html_parser import FPReportParser
     pr = FPReportParser().parse(str(rpt))
     facts = domain_facts_from_lines(pr.source_snippets, function_name="f")
     h = next((f for f in facts if f.variable == "h"), None)

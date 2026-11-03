@@ -12,19 +12,26 @@ This repository builds an LLM-assisted **false-positive (FP) detection and proof
 with (one report model for every analyzer + the code a report names); read it before touching
 report parsing, path resolution, or the build tool's seed selection.
 
-The package is `llm_client`, living under `src/` (no `setup.py`/`pyproject.toml` — imports rely on `src/` being on `PYTHONPATH`).
+The source tree uses a standard `src/` layout with peer packages
+`csa_analysis`, `fp_analysis`, `llm_client`, `pipeline`, and
+`report_frontend`. Dependencies and test configuration are declared in
+`pyproject.toml`.
 
 ## Commands
 
-The package is not installed; tests import `llm_client`, so `src/` must be on the path. Use **`python3.10`** (the default `python3` is older and pytest is installed under 3.10).
+The project uses a standard `src/` layout and declares its dependencies in
+`pyproject.toml`. Install it for development with
+`python3.10 -m pip install -e ".[dev]"`. The top-level packages
+`csa_analysis`, `fp_analysis`, `llm_client`, `pipeline`, and `report_frontend`
+are the canonical import paths.
 
 ```bash
 # Run all tests
-PYTHONPATH=src python3.10 -m pytest tests/
+python3.10 -m pytest tests/
 
 # Single test file / single test
-PYTHONPATH=src python3.10 -m pytest tests/test_fp_analysis/test_conflict_checker.py
-PYTHONPATH=src python3.10 -m pytest tests/test_factory.py::TestProviderFactory::test_create_gpt_provider
+python3.10 -m pytest tests/test_fp_analysis/test_conflict_checker.py
+python3.10 -m pytest tests/test_factory.py::TestProviderFactory::test_create_gpt_provider
 
 # Deterministic-stage regression (no LLM) — see docs/pipeline-stages.md §9
 python3.10 tools/replay_steps1to6.py <reports...>
@@ -72,34 +79,37 @@ CSA, call-graph, and PDG tooling is C++ and built out-of-tree (results land in `
 
 ```bash
 # Reachability checker plugin (dynamically links libclang-cpp; needs clang++-14, llvm-config-14)
-bash src/llm_client/csa_analysis/checker/build.sh
-# Similarly: src/llm_client/csa_analysis/callgraph/build.sh, .../pdg/build.sh
+bash src/csa_analysis/checker/build.sh
+# Similarly: src/csa_analysis/callgraph/build.sh, .../pdg/build.sh
 ```
 
 ## Architecture
 
-Five subsystems under `src/llm_client/` (report frontend, FP pipeline — engine + application,
-C++ tooling, LLM providers), plus a thin top-level runner. The ten-stage application lives in
-`fp_analysis/pipeline/`; `run_path_selection.py` at the root only runs it.
+Five peer packages under `src/` (report frontend, FP engine, application pipeline,
+C++ tooling, LLM providers), plus a thin top-level runner. The ten-stage
+application lives in `pipeline/`; `run_path_selection.py` at the root only runs
+it.
 
-### `run_path_selection.py` (top level) — the runner; `fp_analysis/pipeline/` — the 10 stages
+### `run_path_selection.py` (top level) — the runner; `pipeline/` — the 10 stages
 
 `run_path_selection.py` is **only the runner** (~216 lines): shebang, `sys.path.insert`, the `.env`
 loader, `logging.basicConfig`, the argparse block, `main()`, and a **compat shim** re-exporting the
 names the harness tools and the CLI tests import from here (see below). The pipeline itself is the
-subpackage **`fp_analysis/pipeline/`** — `layout` (repo-root anchor + the one logger),
+package **`pipeline/`** — `layout` (repo-root anchor + the one logger),
 `models` (the dataclasses stages hand each other), `artifacts` (result identity/path/`code_model`
 block + the single `_write_output`), `project_paths` (stage 1's assembly half), `stages` (the
 canonical numbering + stages 1–5 drivers), `selection` (stages 9/10 drivers + verdict prose),
 `exploration` (the attempt loop + the post-loop aggregation), `runner` (`process_report` — the ten
-stages as ten calls), `batch` (work-item collection + the batch driver).
+stages as ten calls), `batch` (work-item collection + the batch driver), and the typed
+`outcomes`/`schemas`/`protocols` contracts. The engine exposes a public analyzer facade and
+delegates LLM response parsing to `fp_analysis/llm_response.py`.
 
 **The authoritative description of the method lives in
 [`docs/pipeline-stages.md`](docs/pipeline-stages.md)** — stage-by-stage inputs, outputs, verdict
 exits, code locations, and the design invariants. Read that before changing any stage.
 The stage index (`runner.process_report` calls them top to bottom):
 
-| # | Stage | Adapter (in `fp_analysis/pipeline/runner.py`) | Verdict exit |
+| # | Stage | Adapter (in `pipeline/runner.py`) | Verdict exit |
 |---|-------|-----------------------------------------------|--------------|
 | 1 | Report parsing + project assembly (`_resolve_paths`, `_infer_source_root`, `_infer_entry_function`, `parse_report`, `load_sdg`; parsing itself is `ReportFrontend` → `report_bridge`) | `_stage1_parse` / `_stage1_assemble` / `_stage1_resolve_entry` | fail-fast on bad source root/PDG |
 | 2 | Path segmentation → `SegmentInfo[]` (`cfg_feasibility.segment_path`; **skipped for a location-only report** — `ReportMetadata.path_evidence`) | `_stage2_segment` / `_stage2_extend_caches` | — |
@@ -198,7 +208,14 @@ serves):
   change as the formats refactor. `report_bridge` is the *pipeline-wide* seam of the same kind.
 
 ### LLM provider layer (`src/llm_client/`)
-Pluggable providers: `base.py` defines the `LLMProvider` ABC + `LLMRequest`/`LLMResponse`/`LLMConfig` dataclasses; `factory.py` maps provider names (`deepseek`, `claude`, `gpt`) to implementations. `errors.py` defines the exception hierarchy (`LLMClientError`, `AuthenticationError`, `RateLimitError`, `TimeoutError`, `LLMProviderError`) — providers MUST raise these, not raw SDK errors. The FP pipeline uses the DeepSeek provider by default (`deepseek-chat`).
+Pluggable providers: `base.py` defines the `LLMProvider` ABC +
+`LLMRequest`/`LLMResponse`/`LLMConfig` dataclasses; `factory.py` lazily maps
+provider names (`deepseek`, `claude`, `gpt`) to implementations; `config.py`
+holds their model and API-key defaults. `errors.py` defines the exception
+hierarchy (`LLMClientError`, `AuthenticationError`, `RateLimitError`,
+`TimeoutError`, `LLMProviderError`) — providers MUST raise these, not raw SDK
+errors. The CLI selects DeepSeek by default and exposes `--provider`, `--model`,
+and `--llm-timeout`.
 
 ## Data artifacts
 

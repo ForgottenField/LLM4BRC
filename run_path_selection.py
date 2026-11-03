@@ -11,7 +11,7 @@ Everything runs by default — there are no mode switches to pass:
   feedback loop can settle the verdict as FP or UNKNOWN.
 
 **This file is only the runner.**  The implementation lives in
-``llm_client.fp_analysis.pipeline`` (see that package's ``__init__`` for the
+``pipeline`` (see that package's ``__init__`` for the
 layer map); this module parses the arguments, loads ``.env``, configures
 logging, resolves every work item up front so a misinvocation fails in seconds,
 and hands the list to the batch driver.  The compatibility block below
@@ -56,7 +56,7 @@ logger = logging.getLogger("path_selection")
 HERE = _HERE
 
 # ─── Compatibility re-exports ────────────────────────────────────────────────────
-# The implementation lives in llm_client.fp_analysis.pipeline.*.  These names are
+# The implementation lives in pipeline.*.  These names are
 # re-bound here because the harness tools (tools/abc_compare.py,
 # tools/replay_steps1to6.py, tools/probe_report_consistency.py) and the CLI tests
 # (tests/test_report_frontend/test_cli_integration.py,
@@ -72,6 +72,7 @@ HERE = _HERE
 from fp_analysis.cfg_cache_set import CFGCacheSet  # noqa: F401
 from fp_analysis.cfg_feasibility import resolve_source_file_for_cfg  # noqa: F401
 from fp_analysis.path_seed_extractor import build_dense_path_annotations  # noqa: F401
+from llm_client.config import PROVIDER_SPECS, provider_spec
 from report_frontend import ReportFrontend, ReportRef  # noqa: F401
 from report_frontend.adapters.base import describe_adapters_table
 
@@ -82,8 +83,9 @@ from pipeline import (  # noqa: F401
     report_out_path,
 )
 from pipeline import (
+    collect_reports,
+    is_report_file,
     run_batch,
-    collect_reports
 )
 from pipeline import DEFAULT_PROJECTS_DIR  # noqa: F401
 from pipeline import (  # noqa: F401
@@ -105,6 +107,16 @@ from pipeline import (  # noqa: F401
     run_branch_filter,
     segment_path,
 )
+
+# Legacy underscore-prefixed names remain available for evaluation scripts.
+# They are aliases, not wrappers, so there is still one implementation.
+_collect_reports = collect_reports
+_is_report_file = is_report_file
+_check_pdg_artifact_version = check_pdg_artifact_version
+_infer_source_root = infer_source_root
+_resolve_paths = resolve_paths
+_resolve_source_file_for_cfg = resolve_source_file_for_cfg
+_infer_entry_function = infer_entry_function
 
 
 def main():
@@ -158,6 +170,13 @@ def main():
                         help="Print every finding in --report (id, rule, location) "
                              "and exit — the selectors --report accepts as "
                              "'<path>::<finding id>'.")
+    parser.add_argument("--provider", choices=sorted(PROVIDER_SPECS),
+                        default="deepseek",
+                        help="LLM provider (default: deepseek).")
+    parser.add_argument("--model", default=None,
+                        help="Provider model override; defaults are provider-specific.")
+    parser.add_argument("--llm-timeout", type=float, default=120.0,
+                        help="Per-request LLM timeout in seconds (default: 120).")
     args = parser.parse_args()
 
     if args.list_formats:
@@ -181,12 +200,13 @@ def main():
                 print(f"      {finding.message.splitlines()[0][:160]}")
         sys.exit(0)
 
-    # Check API key
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    # Check the selected provider's API key before collecting or analysing work.
+    spec = provider_spec(args.provider)
+    api_key = os.environ.get(spec.api_key_env, "")
     if not api_key:
-        print("❌ DEEPSEEK_API_KEY not set in .env")
+        print(f"❌ {spec.api_key_env} not set in .env or the environment")
         sys.exit(1)
-    logger.info("DEEPSEEK_API_KEY: %s...", api_key[:8])
+    logger.info("Using LLM provider: %s", spec.name)
 
     reports = collect_reports(args)
     if args.max_reports:

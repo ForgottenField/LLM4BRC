@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from llm_client.fp_analysis.html_parser import FPReportParser
-from llm_client.fp_analysis.models import ParsedReport
+from fp_analysis.html_parser import FPReportParser
+from fp_analysis.models import ParsedReport
 
 
 class TestFPReportParser:
@@ -67,7 +67,7 @@ class TestFPReportParser:
 
     def test_resolve_source_path(self) -> None:
         """Test source file path resolution."""
-        from llm_client.fp_analysis.html_parser import resolve_report_source_file
+        from fp_analysis.html_parser import resolve_report_source_file
 
         # Non-existent path with known prefix
         result = resolve_report_source_file(

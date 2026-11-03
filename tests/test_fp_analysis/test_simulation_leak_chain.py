@@ -5,7 +5,7 @@ leak-type detector with hand-built :class:`SimulationResult` objects, so they gu
 policy (see the MEMORY-LEAK SIMULATION rules in prompt_templates.py) against regression.
 """
 
-from llm_client.fp_analysis.simulation_verifier import (
+from fp_analysis.simulation_verifier import (
     SimulationResult,
     SimulationVerifier,
     _is_leak_type,

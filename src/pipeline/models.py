@@ -36,6 +36,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pipeline.outcomes import Verdict
+from pipeline.protocols import PathAnalyzerPort
+
 
 # ─── stage outputs (immutable) ───────────────────────────────────────────────────
 
@@ -157,7 +160,7 @@ class VerdictState:
     steps: list = field(default_factory=list)
     final_step: object = ""
     final_reason: object = ""
-    verdict: object = None
+    verdict: Verdict | None = None
 
 
 @dataclass
@@ -197,7 +200,7 @@ class SelectionContext:
 
     args: object
     report_ref: object
-    analyzer: object
+    analyzer: PathAnalyzerPort
     parsed_report: object
     segments: list
     slice_mask: object

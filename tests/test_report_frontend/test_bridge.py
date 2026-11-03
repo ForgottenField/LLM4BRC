@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from llm_client.fp_analysis.report_bridge import (
+from fp_analysis.report_bridge import (
     _SNIPPET_RADIUS,
     source_snippets,
     to_bug_path,
@@ -198,7 +198,7 @@ class TestStageOneConsumers:
     """The bridge's output must be *usable* by stage 2, not merely well-shaped."""
 
     def test_segmentation_accepts_a_sarif_finding(self, sarif_loaded) -> None:
-        from llm_client.fp_analysis.cfg_feasibility import segment_path
+        from fp_analysis.cfg_feasibility import segment_path
 
         parsed = to_parsed_report(sarif_loaded)
         segments = segment_path(parsed)
@@ -210,7 +210,7 @@ class TestStageOneConsumers:
     def test_segmentation_accepts_a_control_bearing_finding(
         self, csa_loaded
     ) -> None:
-        from llm_client.fp_analysis.cfg_feasibility import segment_path
+        from fp_analysis.cfg_feasibility import segment_path
 
         segments = segment_path(to_parsed_report(csa_loaded))
         assert len(segments) > 1

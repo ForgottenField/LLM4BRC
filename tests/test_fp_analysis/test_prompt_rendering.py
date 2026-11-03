@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from llm_client.fp_analysis.path_analyzer import (
+from fp_analysis.path_analyzer import (
     _MAX_RENDERED_DECISIONS, _MAX_RENDERED_STATE_CHARS, FPAnalyzer,
 )
 

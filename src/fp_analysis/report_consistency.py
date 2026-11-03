@@ -10,12 +10,12 @@ Why the existing layers miss it
 -------------------------------
 * The report's own step text carries no values — CSA prints ``Assuming the
   condition is true/false`` and ``Taking false branch``, so
-  :func:`~llm_client.fp_analysis.cfg_feasibility.extract_assumptions_from_events`
+  :func:`~fp_analysis.cfg_feasibility.extract_assumptions_from_events`
   extracts nothing for those steps (:func:`_check_constraint_conflict` then has
   no constraint to compare, and ``_check_global_path_consistency`` is asked
   about the *selected* combination, not the report's path).
 * The branch conditions themselves live in the CFG/PDG layer, where
-  :class:`~llm_client.fp_analysis.conflict_checker.ConflictChecker` compares a
+  :class:`~fp_analysis.conflict_checker.ConflictChecker` compares a
   branch against its segment postcondition / established state — never against
   another branch of the report path.
 

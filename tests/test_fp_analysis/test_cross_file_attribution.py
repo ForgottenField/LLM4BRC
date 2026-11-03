@@ -11,13 +11,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from llm_client.fp_analysis.cfg_feasibility import (
+from fp_analysis.cfg_feasibility import (
     _resolve_local_path,
     build_bug_report_path,
     segment_path,
 )
 from fp_analysis.cfg_models import NodeType
-from llm_client.fp_analysis.models import ParsedReport, ReportMetadata, code_model_of
+from fp_analysis.models import ParsedReport, ReportMetadata, code_model_of
 from fp_analysis.pdg_models import FunctionPDG, PDGNode, SDG
 from report_frontend.code_model import SourceCodeModel
 
@@ -164,7 +164,8 @@ class TestEventFileResolution:
         # report itself mentions.
         (tmp_path / "lib/plugins/core").mkdir(parents=True)
         (tmp_path / "lib/plugins/core/core.h").write_text("// unrelated\n")
-        assert _resolve_local_path("/usr/include/fmt/core.h", str(tmp_path)) is None
+        reported = str(tmp_path / "__missing_include__" / "fmt" / "core.h")
+        assert _resolve_local_path(reported, str(tmp_path)) is None
 
     def test_nothing_is_invented_without_a_source_root(self, tmp_path: Path) -> None:
         # No root means no ladder above ``direct``: a relative path is not

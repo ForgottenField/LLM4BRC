@@ -33,13 +33,26 @@ class ClaudeProvider(LLMProvider):
         max_tokens = request.max_tokens or self._config.default_max_tokens
         timeout = request.timeout or self._config.default_timeout
 
+        normalized = request.normalized_messages()
+        system = "\n\n".join(
+            str(message.get("content", ""))
+            for message in normalized
+            if message.get("role") == "system"
+        )
+        messages = [
+            message for message in normalized if message.get("role") != "system"
+        ]
+        if not messages:
+            messages = [{"role": "user", "content": ""}]
+
         try:
             response = self._client.messages.create(
                 model=model,
                 max_tokens=max_tokens,
-                messages=[{"role": "user", "content": request.prompt}],
+                messages=messages,
                 temperature=request.temperature,
                 timeout=timeout,
+                **({"system": system} if system else {}),
             )
         except Exception as exc:
             self._raise_from_sdk_error(exc)

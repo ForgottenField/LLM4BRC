@@ -354,7 +354,7 @@ class TestEntryFunctionInference:
 
     @staticmethod
     def _parsed(function: str, file: str, line: int):
-        from llm_client.fp_analysis.models import ParsedReport, ReportMetadata
+        from fp_analysis.models import ParsedReport, ReportMetadata
 
         return ParsedReport(
             metadata=ReportMetadata(

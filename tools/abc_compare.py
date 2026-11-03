@@ -40,7 +40,7 @@ from run_path_selection import (  # noqa: E402
     CFGCacheSet, resolve_source_file_for_cfg, build_slice_mask,
     build_dense_path_annotations, load_sdg, parse_report, run_branch_filter,
 )
-from llm_client.fp_analysis.cfg_feasibility import segment_path  # noqa: E402
+from fp_analysis.cfg_feasibility import segment_path  # noqa: E402
 from fp_analysis.path_space import (  # noqa: E402
     annotate_ci_groups, collect_path_space,
 )
@@ -53,10 +53,11 @@ logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 
 
 class _AnalyzerShim:
-    """``collect_path_space`` only reads ``analyzer._sdg``."""
+    """``collect_path_space`` only reads the analyzer's SDG."""
 
     def __init__(self, sdg):
         self._sdg = sdg
+        self.sdg = sdg
 
 
 def _count_nodes(nodes) -> int:

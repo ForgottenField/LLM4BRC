@@ -24,7 +24,7 @@ This package is the seam.  It has three layers, each replaceable on its own:
 
 Usage::
 
-    from llm_client.report_frontend import ReportRef, ReportFrontend
+    from report_frontend import ReportRef, ReportFrontend
 
     frontend = ReportFrontend(source_root="~/csa_reports/project/faiss")
     loaded = frontend.load("report-index_read.cpp-read_index-484-2.html")

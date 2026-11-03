@@ -18,7 +18,7 @@ from fp_analysis.pdg_models import (
     SliceNode,
     SliceResult,
 )
-from llm_client.fp_analysis.pdg_loader import load_pdg
+from fp_analysis.pdg_loader import load_pdg
 
 
 # ---------------------------------------------------------------------------

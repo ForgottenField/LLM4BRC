@@ -2,9 +2,9 @@
 
 Usage::
 
-    >>> from llm_client.fp_analysis.pdg_loader import load_pdg, build_sdg
+    >>> from fp_analysis.pdg_loader import load_pdg, build_sdg
     >>> pdgs = load_pdg("path/to/pdg.json")
-    >>> from llm_client.csa_analysis.callgraph_models import CallGraph
+    >>> from csa_analysis.callgraph_models import CallGraph
     >>> cg = CallGraph.from_json("path/to/callgraph.json")
     >>> sdg = build_sdg(pdgs, cg)
 """
@@ -204,7 +204,7 @@ def build_sdg(
     Args:
         pdgs: Per-function PDGs (from :func:`load_pdg`).
         callgraph: A ``CallGraph`` instance (from
-            ``llm_client.csa_analysis.callgraph_models``).
+            ``csa_analysis.callgraph_models``).
         augment: Apply augmentation passes (member field tracking,
             opaque call effects, union aliases).  Default True.
 

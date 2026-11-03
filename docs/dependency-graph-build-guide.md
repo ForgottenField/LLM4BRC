@@ -15,7 +15,7 @@
 
 | 产物 | 位置 | 由谁消费 | 内容 |
 |---|---|---|---|
-| **`pdg_<project>.json`** | 仓库根 | `load_sdg`（`fp_analysis/pipeline/project_paths.py`）→ 切片 / 分支提取 / 函数归因 | 每个函数的程序依赖图（节点带 `source_line`/`block_id`/`kind`，边有 `control_dep_edges`/`def_use_edges`） |
+| **`pdg_<project>.json`** | 仓库根 | `load_sdg`（`pipeline/project_paths.py`）→ 切片 / 分支提取 / 函数归因 | 每个函数的程序依赖图（节点带 `source_line`/`block_id`/`kind`，边有 `control_dep_edges`/`def_use_edges`） |
 | **`cfg_cache/<project>/*.json`** | `cfg_cache/<project>/` | `CFGCacheSet`（`fp_analysis/cfg_cache_set.py`）→ 分段后按路径文件**按需加载并合并** | 每个**编译单元**的全 TU CFG（按 `md5(绝对源路径)` 命名） |
 | **工程配置** | `cfg_parser.py` 的 `_CFG_PROJECT_CONFIGS` | 运行时 `build_cfg_command` | 每个项目的 include / define / force_include |
 
@@ -101,14 +101,14 @@ PDG 工具 `pdg_builder` 走 `tooling::JSONCompilationDatabase`，即把每条�
 
 ```bash
 cd /home/yanghengqin/bug_report_classification
-src/llm_client/csa_analysis/pdg/build/pdg_builder \
+src/csa_analysis/pdg/build/pdg_builder \
   --compile-db /tmp/faiss_cc/compile_commands.json \
   --output pdg_faiss.json
 ```
 
 **验证三件事**：
 1. 文件生成、体积合理（对照：aria2 46MB/24019 fn、folly 21MB/10840 fn、faiss 53MB/13648 fn、protobuf 38MB/12796 fn）。
-2. 可用 `from llm_client.fp_analysis.pipeline.project_paths import load_sdg` 载入
+2. 可用 `from pipeline.project_paths import load_sdg` 载入
    `pdg_faiss.json`，函数数非 0（`run_path_selection.load_sdg` 是同一个函数的再导出）。
 3. **该批报告的 bug 宿主函数都在册**（判断有没有走 permissive fallback）：
    ```python
@@ -120,7 +120,7 @@ src/llm_client/csa_analysis/pdg/build/pdg_builder \
 
 构建工具本身是 C++，需先编译（通常已就绪）：
 ```bash
-bash src/llm_client/csa_analysis/pdg/build.sh   # 产出 build/pdg_builder（唯一二进制名，勿另起名）
+bash src/csa_analysis/pdg/build.sh   # 产出 build/pdg_builder（唯一二进制名，勿另起名）
 ```
 
 ### 3.1 产物版本必须与代码一致（陈旧产物的教训）
@@ -182,7 +182,7 @@ CFG cache **每文件 = 一个源文件的整 TU CFG**，文件名为 `cfg_cache
 
 ```python
 import sys; sys.path.insert(0, "src")
-from llm_client.fp_analysis import cfg_feasibility as CF
+from fp_analysis import cfg_feasibility as CF
 
 SRC = "/home/yanghengqin/csa_reports/project/faiss"
 for rel in ["faiss/impl/index_read.cpp", "..."]:          # 见 4.1 的并集
@@ -226,7 +226,7 @@ protobuf 全套缓存因此从 **30.8 GB 降到 35 MB**；faiss/folly 的既有�
 
 运行时 CFG dump 与验证阶段的 POC 编译各自维护一份同名配置，**漏一处就会有一侧失败**：
 
-1. `src/llm_client/fp_analysis/cfg_parser.py` → `_CFG_PROJECT_CONFIGS`：
+1. `src/fp_analysis/cfg_parser.py` → `_CFG_PROJECT_CONFIGS`：
    ```python
    "faiss": {
        "include_paths": [".", "/usr/lib/gcc/x86_64-linux-gnu/10/include"],  # "." 相对 project_root 解析到 -I<root>
@@ -234,7 +234,7 @@ protobuf 全套缓存因此从 **30.8 GB 降到 35 MB**；faiss/folly 的既有�
        "force_includes": [],
    },
    ```
-2. `src/llm_client/fp_analysis/cfg_parser.py` → `_CFG_PROJECT_CONFIGS`：同样加 faiss 键。
+2. `src/fp_analysis/cfg_parser.py` → `_CFG_PROJECT_CONFIGS`：同样加 faiss 键。
 
 `build_cfg_command` 对 `include_paths` 会先尝试 `Path(source_root)/rel_inc` 是否存在再拼 `-I`，所以应指向能解析 `#include "faiss/..."` 的根目录。
 

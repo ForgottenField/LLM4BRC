@@ -664,7 +664,7 @@ class ConflictChecker:
            appears in *postcondition_text* is marked ``consistent``.
         2. **Short-circuit pruning**: PDG sub-expression nodes that are
            short-circuited operands (detected via
-           :func:`~llm_client.fp_analysis.structural_pruning.find_short_circuited_branches`)
+           :func:`~fp_analysis.structural_pruning.find_short_circuited_branches`)
            are marked ``contradictory``.
         """
         from fp_analysis.structural_pruning import (

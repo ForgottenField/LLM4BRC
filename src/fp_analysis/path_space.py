@@ -113,7 +113,7 @@ def collect_path_space(analyzer, segments, selections=None) -> dict:
             "whole_path_bound": int, "capped": bool}``
     """
     chosen_pairs = _chosen_pairs(selections)
-    sdg = getattr(analyzer, "_sdg", None)
+    sdg = getattr(analyzer, "sdg", None)
     shortest_pc = ShortestPathComputer(sdg, CalleePathCache(sdg))
     cap = ShortestPathComputer._MAX_CANDIDATES
 

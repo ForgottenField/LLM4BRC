@@ -1,6 +1,6 @@
 """The compatibility block in ``run_path_selection.py`` is a contract, not dead code.
 
-The implementation moved into :mod:`llm_client.fp_analysis.pipeline`, but the
+The implementation moved into :mod:`pipeline`, but the
 harness tools (``tools/{replay_steps1to6,abc_compare,probe_report_consistency}.py``)
 and the CLI tests import their names **from the script**, and did so before the
 move.  Keeping the script's re-export block is what made the move touch no import
@@ -38,33 +38,35 @@ import run_path_selection as rps  # noqa: E402
 #: imports at the top of the block (``CFGCacheSet`` and friends are imported
 #: there directly, not re-exported through the pipeline).
 ALIASES: dict[str, str] = {
-    "ReportFrontend": "llm_client.report_frontend",
-    "ReportRef": "llm_client.report_frontend",
-    "describe_adapters_table": "llm_client.report_frontend.adapters.base",
-    "CFGCacheSet": "llm_client.fp_analysis.cfg_cache_set",
-    "_resolve_source_file_for_cfg": "llm_client.fp_analysis.cfg_feasibility",
-    "build_dense_path_annotations": "llm_client.fp_analysis.path_seed_extractor",
-    "DEFAULT_PROJECTS_DIR": "llm_client.fp_analysis.pipeline.layout",
-    "code_model_report": "llm_client.fp_analysis.pipeline.artifacts",
-    "report_fields": "llm_client.fp_analysis.pipeline.artifacts",
-    "report_key": "llm_client.fp_analysis.pipeline.artifacts",
-    "report_out_path": "llm_client.fp_analysis.pipeline.artifacts",
-    "_collect_reports": "llm_client.fp_analysis.pipeline.batch",
-    "_is_report_file": "llm_client.fp_analysis.pipeline.batch",
-    "run_batch": "llm_client.fp_analysis.pipeline.batch",
-    "_check_pdg_artifact_version": "llm_client.fp_analysis.pipeline.project_paths",
-    "_infer_source_root": "llm_client.fp_analysis.pipeline.project_paths",
-    "_resolve_paths": "llm_client.fp_analysis.pipeline.project_paths",
-    "load_cfg_cache": "llm_client.fp_analysis.pipeline.project_paths",
-    "load_sdg": "llm_client.fp_analysis.pipeline.project_paths",
-    "process_report": "llm_client.fp_analysis.pipeline.runner",
-    "_NO_PATH_STEP_KEYWORD": "llm_client.fp_analysis.pipeline.selection",
-    "_no_path_verdict": "llm_client.fp_analysis.pipeline.selection",
-    "_infer_entry_function": "llm_client.fp_analysis.pipeline.stages",
-    "build_slice_mask": "llm_client.fp_analysis.pipeline.stages",
-    "parse_report": "llm_client.fp_analysis.pipeline.stages",
-    "run_branch_filter": "llm_client.fp_analysis.pipeline.stages",
-    "segment_path": "llm_client.fp_analysis.pipeline.stages",
+    "ReportFrontend": "report_frontend",
+    "ReportRef": "report_frontend",
+    "describe_adapters_table": "report_frontend.adapters.base",
+    "CFGCacheSet": "fp_analysis.cfg_cache_set",
+    "_resolve_source_file_for_cfg": "fp_analysis.cfg_feasibility",
+    "resolve_source_file_for_cfg": "fp_analysis.cfg_feasibility",
+    "build_dense_path_annotations": "fp_analysis.path_seed_extractor",
+    "DEFAULT_PROJECTS_DIR": "pipeline",
+    "code_model_report": "pipeline.artifacts",
+    "report_fields": "pipeline.artifacts",
+    "report_key": "pipeline.artifacts",
+    "report_out_path": "pipeline.artifacts",
+    "_collect_reports": "pipeline.batch",
+    "_is_report_file": "pipeline.batch",
+    "run_batch": "pipeline.batch",
+    "_check_pdg_artifact_version": "pipeline.project_paths",
+    "_infer_source_root": "pipeline.project_paths",
+    "_resolve_paths": "pipeline.project_paths",
+    "load_cfg_cache": "pipeline.project_paths",
+    "load_sdg": "pipeline.project_paths",
+    "process_report": "pipeline.runner",
+    "_NO_PATH_STEP_KEYWORD": "pipeline.selection",
+    "_no_path_verdict": "pipeline.selection",
+    "_infer_entry_function": "pipeline.stages",
+    "infer_entry_function": "pipeline.stages",
+    "build_slice_mask": "pipeline.stages",
+    "parse_report": "pipeline.stages",
+    "run_branch_filter": "pipeline.stages",
+    "segment_path": "pipeline.stages",
 }
 
 
@@ -138,7 +140,7 @@ class TestTheMonkeypatchSeamsAreWhereTheTestsSay:
     def test_the_selector_seam_is_in_the_runner(self) -> None:
         from pipeline import runner
 
-        source = (REPO_ROOT / "src/llm_client/fp_analysis/pipeline/runner.py").read_text()
+        source = (REPO_ROOT / "src/pipeline/runner.py").read_text()
         # The call sites, not the import: `_resolve_paths`/`parse_report` are
         # bare names inside `process_report`, so they resolve in `runner`.
         assert "parse_report(" in source

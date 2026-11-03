@@ -108,8 +108,8 @@ class TestShortestPathIntegration:
 
     def test_compute_topk_with_real_tree_structure(self):
         """ShortestPathComputer handles a tree with mixed verdicts."""
-        from llm_client.fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
-        from llm_client.fp_analysis.cfg_branch_models import (
+        from fp_analysis.shortest_path import ShortestPathComputer, CalleePathCache
+        from fp_analysis.cfg_branch_models import (
             BranchTag, CFGBranchNode, CFGBranchTree, Postcondition,
         )
         from fp_analysis.pdg_models import SDG
@@ -165,7 +165,7 @@ class TestShortestPathIntegration:
 
     def test_callee_cache_integration(self):
         """CalleePathCache integrates with SDG for real callee lookup."""
-        from llm_client.fp_analysis.shortest_path import CalleePathCache
+        from fp_analysis.shortest_path import CalleePathCache
         from fp_analysis.pdg_models import (
             DefUseEdge, FunctionPDG, PDGNode, SDG,
         )

@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import pytest
 
-from llm_client.fp_analysis.cfg_branch_models import (
+from fp_analysis.cfg_branch_models import (
     BranchTag,
     CFGBranchNode,
     CFGBranchTree,
@@ -42,7 +42,7 @@ from llm_client.fp_analysis.cfg_branch_models import (
 from fp_analysis.conflict_checker import (
     DirectVariableMatcher,
 )
-from llm_client.fp_analysis.shortest_path import CalleePathCache, ShortestPathComputer
+from fp_analysis.shortest_path import CalleePathCache, ShortestPathComputer
 
 
 def _make_spc(sdg=None):
@@ -375,7 +375,7 @@ class TestAllAlternativesExhausted:
     def test_postcondition_prunes_all_candidates(self, seg1_tree):
         """If postcondition requires L389=FALSE, and ALL candidates have
         L389=TRUE, the filter prunes everything → stuck."""
-        from llm_client.fp_analysis.shortest_path import ShortestPathComputer
+        from fp_analysis.shortest_path import ShortestPathComputer
 
         pc = _make_spc()
 
@@ -427,7 +427,7 @@ class TestAllAlternativesExhausted:
     def test_mixed_contradictory_and_insufficient(self, seg6_tree):
         """Some roots contradictory, some insufficient → DFS can still
         find paths through the insufficient ones."""
-        from llm_client.fp_analysis.shortest_path import ShortestPathComputer
+        from fp_analysis.shortest_path import ShortestPathComputer
 
         # Tag the callee sentinel as contradictory
         for node in seg6_tree.root_branches:
@@ -567,7 +567,7 @@ class TestCalleeSentinelPostconditionConflict:
         tree.update_stats()
 
         # Now test demotion logic
-        from llm_client.fp_analysis.shortest_path import ShortestPathComputer
+        from fp_analysis.shortest_path import ShortestPathComputer
         pc_obj = _make_spc()
 
         # BEFORE demotion: consistent=TRUE node at L389 with is_taken_branch=True
@@ -602,7 +602,7 @@ class TestCalleeSentinelPostconditionConflict:
         )
         tree.add_branch(callee_node)
 
-        from llm_client.fp_analysis.shortest_path import ShortestPathComputer
+        from fp_analysis.shortest_path import ShortestPathComputer
         pc_obj = _make_spc()
         pc_obj._demote_conflicting_consistent(
             tree.root_branches, pc_line=389, pc_taken=True,
@@ -783,7 +783,7 @@ class TestMissingPostconditionRobustness:
 
     def test_compute_topk_without_postcondition(self, seg1_tree):
         """compute_topk should work fine without a postcondition."""
-        from llm_client.fp_analysis.shortest_path import ShortestPathComputer
+        from fp_analysis.shortest_path import ShortestPathComputer
 
         pc = _make_spc()
         # Without postcondition filter, all candidates pass

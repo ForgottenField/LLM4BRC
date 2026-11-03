@@ -63,12 +63,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from llm_client.fp_analysis import cfg_feasibility as CF  # noqa: E402
+from fp_analysis import cfg_feasibility as CF  # noqa: E402
 from fp_analysis import cfg_parser as CP
-from llm_client.fp_analysis.models import ParsedReport  # noqa: E402
-from llm_client.fp_analysis.pdg_loader import read_pdg_artifact_version  # noqa: E402
+from fp_analysis.models import ParsedReport  # noqa: E402
+from fp_analysis.pdg_loader import read_pdg_artifact_version  # noqa: E402
 from fp_analysis.pdg_models import PDG_ARTIFACT_VERSION  # noqa: E402
-from llm_client.fp_analysis.report_bridge import to_parsed_report  # noqa: E402
+from fp_analysis.report_bridge import to_parsed_report  # noqa: E402
 from report_frontend import (  # noqa: E402
     ReportFrontend,
     ReportFrontendError,
@@ -81,8 +81,8 @@ from report_frontend import (  # noqa: E402
 #: artifact's declared version is checked against it below.  A second, older
 #: copy (``pdg_builder_local``, built 8-21, version 1.0) used to be named here;
 #: it produced ``pdg_protobuf.json`` for a whole 21-report evaluation.
-PDG_BUILDER = REPO_ROOT / "src/llm_client/csa_analysis/pdg/build/pdg_builder"
-PDG_BUILDER_SRC = REPO_ROOT / "src/llm_client/csa_analysis/pdg/PDGBuilder.cpp"
+PDG_BUILDER = REPO_ROOT / "src/csa_analysis/pdg/build/pdg_builder"
+PDG_BUILDER_SRC = REPO_ROOT / "src/csa_analysis/pdg/PDGBuilder.cpp"
 CXX = "clang++-14"
 CXX_STD = "-std=c++17"
 
@@ -585,7 +585,7 @@ def check_builder(log) -> bool:
     ok = True
     if not PDG_BUILDER.exists():
         log(f"ERROR: PDG builder missing: {PDG_BUILDER}")
-        log("       build it: bash src/llm_client/csa_analysis/pdg/build.sh")
+        log("       build it: bash src/csa_analysis/pdg/build.sh")
         return False
 
     declared = declared_builder_version()
@@ -602,7 +602,7 @@ def check_builder(log) -> bool:
     try:
         if PDG_BUILDER.stat().st_mtime < PDG_BUILDER_SRC.stat().st_mtime:
             log(f"WARNING: {PDG_BUILDER.name} is older than {PDG_BUILDER_SRC.name} "
-                "— rebuild: bash src/llm_client/csa_analysis/pdg/build.sh "
+                "— rebuild: bash src/csa_analysis/pdg/build.sh "
                 "(the declared version below will not catch a same-version source edit)")
     except OSError:
         pass
@@ -626,7 +626,7 @@ def verify_pdg_version(pdg_path: Path, log) -> bool:
         return True
     log(f"ERROR: {pdg_path.name} declares version {version!r}, expected "
         f"{PDG_ARTIFACT_VERSION!r} — the builder binary does not match its source")
-    log("       rebuild: bash src/llm_client/csa_analysis/pdg/build.sh")
+    log("       rebuild: bash src/csa_analysis/pdg/build.sh")
     try:
         pdg_path.unlink()
         log(f"       removed the unusable artifact: {pdg_path}")

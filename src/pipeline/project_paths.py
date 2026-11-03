@@ -226,7 +226,7 @@ def resolve_paths(
             f"SDG/PDG file not found: {pdg_path} (project {project_name!r}). "
             f"Build it offline for this project, or pass --pdg <path>."
         )
-    # _check_pdg_artifact_version(pdg_path, project_name)
+    check_pdg_artifact_version(pdg_path, project_name)
 
     if args.cfg_cache:
         cfg_cache_path = Path(args.cfg_cache).resolve()
@@ -234,6 +234,12 @@ def resolve_paths(
         cfg_cache_path = None
 
     return ref, cfg_cache_path, pdg_path, source_root
+
+
+# Compatibility names used by the historical evaluation scripts.
+_check_pdg_artifact_version = check_pdg_artifact_version
+_infer_source_root = infer_source_root
+_resolve_paths = resolve_paths
 
 
 def cache_mentions_function(

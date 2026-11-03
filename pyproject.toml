@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm4brc"
+version = "0.1.0"
+description = "LLM-assisted false-positive classification for static-analysis reports"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "openai>=1.0,<3",
+  "pydantic>=2,<3",
+]
+
+[project.optional-dependencies]
+claude = ["anthropic>=0.40"]
+dev = [
+  "anthropic>=0.40",
+  "pytest>=8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = [
+  "csa_analysis*",
+  "fp_analysis*",
+  "llm_client*",
+  "pipeline*",
+  "report_frontend*",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

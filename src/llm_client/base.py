@@ -29,6 +29,18 @@ class LLMRequest:
     max_tokens: int = 1024
     timeout: float = 60.0
 
+    def normalized_messages(self) -> list[dict[str, str]]:
+        """Return the request as provider-neutral chat messages.
+
+        ``messages`` is the canonical representation when supplied.  The
+        legacy single ``prompt`` remains supported as a convenience input.
+        Providers call this method instead of reading either field directly so
+        their request behavior cannot diverge.
+        """
+        if self.messages:
+            return [dict(message) for message in self.messages]
+        return [{"role": "user", "content": self.prompt}]
+
 
 @dataclass
 class LLMResponse:

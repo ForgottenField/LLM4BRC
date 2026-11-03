@@ -32,6 +32,7 @@ import re
 from dataclasses import dataclass, field
 
 from fp_analysis.models import code_model_of
+from fp_analysis.contracts import SimulationAnalyzer
 from fp_analysis.prompt_templates import (
     MEMORY_LEAK_SIMULATION_RULES,
     SIMULATION_PROMPT,
@@ -381,7 +382,7 @@ def _step_source_line(
 class SimulationVerifier:
     """Generate-free TP validation: LLM simulates a POC, with a refine loop."""
 
-    def __init__(self, analyzer) -> None:
+    def __init__(self, analyzer: SimulationAnalyzer) -> None:
         """*analyzer*: the :class:`FPAnalyzer` instance running the pipeline."""
         self._analyzer = analyzer
 
@@ -394,17 +395,16 @@ class SimulationVerifier:
             "bug_file": md.bug_file,
             "bug_line": md.bug_line,
             "bug_function": md.function_name,
-            "project": getattr(self._analyzer, "_project_name", "") or "target project",
+            "project": self._analyzer.project_name or "target project",
         }
 
     def _source_context(self, analysis) -> str:
         if getattr(analysis, "reduced_code", ""):
             return analysis.reduced_code
         try:
-            source_ctx = self._analyzer._source_extractor.extract(
-                analysis.parsed_report
+            return self._analyzer.extract_source_context(
+                analysis.parsed_report, max_lines=60,
             )
-            return source_ctx.format_for_llm(max_lines=60)
         except Exception as e:  # noqa: BLE001 — best-effort source context
             logger.warning("Simulation: source-context extraction failed: %s", e)
             return "(source context unavailable)"
@@ -553,7 +553,7 @@ class SimulationVerifier:
         # claiming an unwritten output parameter survived the audit (the write
         # that refutes it lived in another file).  Advisory: an unresolvable
         # callee yields no block, and the audit rules below decide.
-        callee_sources = self._analyzer._extract_callee_sources_for_prompt(
+        callee_sources = self._analyzer.extract_callee_sources_for_prompt(
             getattr(analysis, "parsed_report", None)
         )
         if callee_sources:
@@ -596,7 +596,7 @@ class SimulationVerifier:
         # judges THIS specific branch path (not an arbitrary one).  This is what
         # makes Tier-2 "is this other path infeasible?" a real per-path check.
         if selected_branches:
-            blueprint = self._analyzer._format_selected_branch_blueprint(
+            blueprint = self._analyzer.format_selected_branch_blueprint(
                 selected_branches
             )
             if blueprint:
@@ -621,18 +621,18 @@ class SimulationVerifier:
         # factory) as able to take any value, when source pins them to a small fixed set.
         # Surface that advisory domain fact to the auditor so it can judge reachability where
         # CSA saw none.  Set by run_path_selection Step 5.5 on this same FPAnalyzer instance.
-        domain_text = getattr(self._analyzer, "_domain_facts_text", "") if self._analyzer else ""
+        domain_text = self._analyzer.domain_facts_text if self._analyzer else ""
         if domain_text:
             user_prompt += "\n\n" + domain_text
             logger.info("Simulation: appended %d guard-pinned domain-fact lines",
                         domain_text.count("\n") + 1)
 
-        raw = self._analyzer._call_llm(
+        raw = self._analyzer.call_llm(
             system_prompt, user_prompt, max_tokens=_SIMULATION_MAX_TOKENS
         )
         parse_degraded = False
         try:
-            data = self._analyzer._parse_json_response(raw, "simulated execution")
+            data = self._analyzer.parse_json_response(raw, "simulated execution")
             result = SimulationResult.from_dict(data, step_rows)
         except Exception as strict_err:  # noqa: BLE001 — try the repairing parse next
             try:
@@ -640,7 +640,7 @@ class SimulationVerifier:
                 # not a malformed one: repair the JSON prefix instead of dropping
                 # to the regex fallback, which loses the entire per-step
                 # path-conformance audit.
-                data = self._analyzer._parse_json_response_tolerant(
+                data = self._analyzer.parse_json_response_tolerant(
                     raw, "simulated execution"
                 )
                 result = SimulationResult.from_dict(data, step_rows)
@@ -742,7 +742,7 @@ class SimulationVerifier:
             source_context=self._source_context(analysis),
         )
         if selected_branches:
-            blueprint = self._analyzer._format_selected_branch_blueprint(
+            blueprint = self._analyzer.format_selected_branch_blueprint(
                 selected_branches
             )
             if blueprint:
@@ -755,10 +755,10 @@ class SimulationVerifier:
         # Same budget as the simulation: the refinement prompt carries the
         # full original POC + the mismatch report, and its reply is a whole
         # C++ file — a truncated file would be compiled/audited as if complete.
-        raw = self._analyzer._call_llm(
+        raw = self._analyzer.call_llm(
             system_prompt, user_prompt, max_tokens=_SIMULATION_MAX_TOKENS
         )
-        refined = self._analyzer._extract_code(raw)
+        refined = self._analyzer.extract_code(raw)
         if not refined.strip():
             logger.warning("Simulation: LLM returned empty refined POC; keeping original.")
             return poc_code

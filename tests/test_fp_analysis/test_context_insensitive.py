@@ -17,7 +17,7 @@ from fp_analysis.path_space import (
     ci_branch_set_of,
     _normalize_call_edge,
 )
-from llm_client.fp_analysis.combination_enum import (
+from fp_analysis.combination_enum import (
     _ci_dims,
     build_selections_from_combo,
 )

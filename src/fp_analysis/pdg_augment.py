@@ -28,7 +28,7 @@ but never exclude a relevant node.
 
 Usage::
 
-    from llm_client.fp_analysis.pdg_augment import augment_pdg_sdg
+    from fp_analysis.pdg_augment import augment_pdg_sdg
 
     sdg = augment_pdg_sdg(sdg)  # adds synthetic def-use edges in-place
 """

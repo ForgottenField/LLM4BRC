@@ -30,6 +30,7 @@ import os
 import time
 
 from llm_client.base import LLMConfig
+from llm_client.config import provider_spec
 from fp_analysis.branch_relevance import (
     classify_branch_relevance,
     reduce_path_space,
@@ -72,8 +73,10 @@ from pipeline.models import (
     Stage8PathSpace,
     VerdictState,
 )
+from pipeline.outcomes import Verdict
 from pipeline.project_paths import resolve_cfg_cache, load_sdg
 from pipeline.project_paths import resolve_paths
+from pipeline.schemas import ResultDocument
 from pipeline.selection import _NO_PATH_STEP_KEYWORD
 from pipeline.stages import (
     infer_entry_function,
@@ -86,6 +89,9 @@ from pipeline.stages import (
 )
 
 logger = get_logger()
+
+# Compatibility name used by tests and tools that patch the runner seam.
+_resolve_paths = resolve_paths
 
 def _print_run_banner(args, report_ref, source_root, pdg_path, cfg_cache_path) -> None:
     """The run header: what is being analysed and against which project data.
@@ -258,21 +264,24 @@ def _build_analyzer(args, source_root, pdg_path, t0) -> FPAnalyzer:
     # Created here (before the branch filter) so the assumption-derived state
     # can feed into conflict checking (Layers 1b/1.5), which previously never
     # received any established_state and therefore pruned nothing.
-    api_key = os.environ["DEEPSEEK_API_KEY"]
+    spec = provider_spec(getattr(args, "provider", "deepseek"))
+    api_key = os.environ[spec.api_key_env]
+    model = getattr(args, "model", None) or spec.default_model
     config = LLMConfig(
-        provider_name="deepseek",
+        provider_name=spec.name,
         api_key=api_key,
-        default_model="deepseek-chat",
-        default_timeout=120,
+        default_model=model,
+        default_timeout=getattr(args, "llm_timeout", 120.0),
     )
     # FPAnalyzer creates LLMProvider internally from config
     analyzer = FPAnalyzer(
         llm_config=config,
+        model=model,
         source_root=str(source_root),
         pdg_path=str(pdg_path),
         report_format=getattr(args, "report_format", None),
     )
-    print(f"  FPAnalyzer ready (model={analyzer._model}) [{time.time()-t0:.1f}s]")
+    print(f"  FPAnalyzer ready (model={analyzer.model_name}) [{time.time()-t0:.1f}s]")
     return analyzer
 
 
@@ -280,9 +289,9 @@ def _stage4_assumptions(analyzer, segments, parsed_report, source_root) -> Stage
     """Stage 4: assumption feasibility — the pipeline's first LLM call."""
     # ── Stage 4: assumption feasibility (runs before the branch filter) ──
     t0 = time.time()
-    global_constraints = analyzer._load_global_constraints(
+    global_constraints = analyzer.load_global_constraints(
         str(source_root),
-        target_classes=analyzer._extract_class_names_from_path(parsed_report),
+        target_classes=analyzer.extract_class_names_from_path(parsed_report),
     )
     hard_constraints, cumulative_state = analyzer.check_assumptions_feasibility(
         segments=segments,
@@ -333,7 +342,7 @@ def _stage5_branch_filter(segments, parsed_report, cfg_cache, sdg, slice_mask,
 
 
 def _stage6_gate(args, report_ref, segments, parsed_report, source_root, entry_fn,
-                 t0, total_start) -> dict | None:
+                 t0, total_start) -> ResultDocument | None:
     """Stage 6: the two deterministic FP gates, sharing one exit.
 
     Returns the result JSON when a gate fired, ``None`` otherwise.  ``t0`` is
@@ -417,7 +426,7 @@ def _stage6_gate(args, report_ref, segments, parsed_report, source_root, entry_f
             "algorithm": "conflict-driven",
             "entry_function": entry_fn,
             "bug_type": parsed_report.metadata.bug_type,
-            "verdict": "FP",
+            "verdict": Verdict.FP.value,
             "verdict_reason": _fp_reason,
             "verdict_steps": (
                 [f"报告自相矛盾判定: {c.reason()}" for c in report_contradictions]
@@ -530,7 +539,7 @@ def _stage7_supplement(analyzer, segments, parsed_report, sdg, slice_mask,
         target_fns.add(parsed_report.metadata.function_name)
         domain_facts = extract_domain_facts(sdg, slice_mask, target_fns)
         # Default: no facts (nothing appended to selection prompt nor the simulator).
-        analyzer._domain_facts_text = ""
+        analyzer.set_domain_facts_text("")
         if domain_facts:
             fact_text = format_domain_facts(domain_facts)
             extra_preconditions.append(
@@ -539,7 +548,7 @@ def _stage7_supplement(analyzer, segments, parsed_report, sdg, slice_mask,
             )
             # Also stash on the analyzer so the simulation auditor (reuses this same
             # FPAnalyzer) can append the facts to its own prompt (see simulate_execution).
-            analyzer._domain_facts_text = fact_text
+            analyzer.set_domain_facts_text(fact_text)
             print(f"{stage_label(7)}: domain supplement — {len(domain_facts)} guard-pinned "
                   f"variable fact(s) surfaced to LLM")
             for df in domain_facts:
@@ -550,7 +559,7 @@ def _stage7_supplement(analyzer, segments, parsed_report, sdg, slice_mask,
 
 
 def _stage7_gate(analyzer, parsed_report, args, report_ref, entry_fn, source_root,
-                 total_start) -> dict | None:
+                 total_start) -> ResultDocument | None:
     """Stage 7: the decisive semantic finite-domain conflict gate.
 
     Returns the result JSON on a decisive answer, ``None`` when the gate declines
@@ -589,7 +598,7 @@ def _stage7_gate(analyzer, parsed_report, args, report_ref, entry_fn, source_roo
                 "decisive_fp": True,
                 "reason": semantic_fp_reason,
             },
-            "verdict": "FP",
+            "verdict": Verdict.FP.value,
             "verdict_step": stage_step(7, "（约束补全，枚举前判定）"),
             "verdict_reason": semantic_fp_reason,
             "verdict_steps": [f"约束补全判定: {semantic_fp_reason}"],
@@ -838,7 +847,9 @@ def _print_results(ctx, verdict_state, explore) -> dict:
     return path_space
 
 
-def _build_output_dict(ctx, verdict_state, explore, stage4, stage5, path_space) -> dict:
+def _build_output_dict(
+    ctx, verdict_state, explore, stage4, stage5, path_space,
+) -> ResultDocument:
     """Assemble the result JSON.  Does not write it — :func:`_write_output` does.
 
     Every key here has a reader: ``tools/summarize_faiss_eval.py`` and the eval
@@ -1009,7 +1020,7 @@ def _print_final_verdict(verdict_state, explore) -> None:
             print(f"      · {s}")
 
 
-def process_report(args, report_path):
+def process_report(args, report_path) -> ResultDocument:
     """Run the full pipeline for a single report and write its result JSON.
 
     Returns the output dict (with a ``verdict`` field) for batch aggregation.
@@ -1019,7 +1030,7 @@ def process_report(args, report_path):
     and ``explore``, which the aggregation then reasons over.
     """
     # Resolve paths
-    report_ref, cfg_cache_path, pdg_path, source_root = resolve_paths(args, report_path)
+    report_ref, cfg_cache_path, pdg_path, source_root = _resolve_paths(args, report_path)
     report_path = report_ref.path
     total_start = time.time()
 

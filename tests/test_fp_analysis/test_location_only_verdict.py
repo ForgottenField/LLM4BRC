@@ -64,7 +64,7 @@ class TestNoPathVerdict:
         # The policy reads the same string the pipeline carries, and
         # `ReportMetadata.has_path` is the same test on the model side — the two
         # must not drift.
-        from llm_client.fp_analysis.models import ReportMetadata
+        from fp_analysis.models import ReportMetadata
 
         trace = ReportMetadata(bug_type="t", bug_file="f.cc", bug_line=1,
                                path_evidence="trace")

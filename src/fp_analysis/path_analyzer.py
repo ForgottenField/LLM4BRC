@@ -44,6 +44,11 @@ from fp_analysis.domain_facts import (
     format_domain_facts,
     _is_macro_noise,
 )
+from fp_analysis.llm_response import (
+    extract_code as _extract_code_response,
+    parse_json_response as _parse_json_response_text,
+    parse_json_response_tolerant as _parse_json_response_tolerant_text,
+)
 
 from fp_analysis.slice_mask import SliceMask
 
@@ -171,92 +176,6 @@ def _find_variable_in_condition(condition: str) -> str | None:
     if simple:
         return None  # Too simple — could be a flag, but no comparison to anchor
 
-    return None
-
-
-def _close_open_structures(s: str) -> str:
-    """Append the closing ``}``/``]`` needed to balance a (possibly truncated)
-    JSON string, respecting string literals and escapes.  Used to salvage an
-    LLM response that was cut off at the token limit."""
-    stack: list[str] = []
-    in_str = False
-    esc = False
-    for ch in s:
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch in "{[":
-            stack.append(ch)
-        elif ch in "}]":
-            if stack:
-                stack.pop()
-    return s + "".join("}" if ch == "{" else "]" for ch in reversed(stack))
-
-
-def _repair_truncated_json(text: str) -> str | None:
-    """Best-effort repair of a JSON document truncated mid-output (typically an
-    unterminated string at the token limit).  Returns the shortest repaired
-    string that parses, or ``None`` if unrecoverable.
-
-    Strategy: find where ``json.loads`` first failed, then try progressively
-    earlier structural cut points (the unterminated-string opener first, then
-    surrounding ``, { [ } ]``), rebalancing braces each time, until a prefix
-    parses."""
-    if not text:
-        return None
-    text = text.strip()
-    try:
-        json.loads(text)
-        return text
-    except json.JSONDecodeError:
-        pass
-
-    try:
-        json.loads(text)
-    except json.JSONDecodeError as ex:
-        epos = ex.pos
-    else:
-        epos = len(text)
-
-    # Candidate cut points, best-effort first (nearest the error, going back).
-    cuts: list[int] = []
-    seen: set[int] = set()
-
-    def _add(i: int) -> None:
-        if 0 < i < len(text) and i not in seen:
-            seen.add(i)
-            cuts.append(i)
-
-    _add(epos)
-    for i in range(min(epos, len(text)) - 1, -1, -1):
-        if text[i] in ",{[]}" and (i == 0 or text[i - 1] != "\\"):
-            _add(i)
-        if len(cuts) > 250:
-            break
-    cuts.sort(reverse=True)
-
-    for cut in cuts:
-        prefix = text[:cut].rstrip().rstrip(",").rstrip()
-        # If a value was cut right after its key's colon, the prefix ends with
-        # a dangling ``"key":`` — drop that trailing key so the object closes
-        # cleanly instead of leaving a key with no value.
-        if prefix.endswith(":"):
-            m = re.search(r'"([^"\\]|\\.)*"\s*$', prefix.rstrip()[:-1].rstrip())
-            if m:
-                prefix = prefix[: m.start()].rstrip()
-        closed = _close_open_structures(prefix)
-        try:
-            json.loads(closed)
-            return closed
-        except json.JSONDecodeError:
-            continue
     return None
 
 
@@ -1036,6 +955,129 @@ class FPAnalyzer:
             self._provider: LLMProvider = ProviderFactory.create(llm_config)
         else:
             self._provider = None
+
+    # ------------------------------------------------------------------
+    # Application-facing API
+    # ------------------------------------------------------------------
+    #
+    # The application pipeline consumes this narrow facade rather than the
+    # implementation attributes below.  These wrappers preserve current
+    # behavior while giving the large analyzer a stable seam for later
+    # decomposition into smaller services.
+
+    @property
+    def model_name(self) -> str:
+        return self._model
+
+    @property
+    def sdg(self) -> SDG | None:
+        return self._sdg
+
+    @property
+    def project_name(self) -> str:
+        return self._project_name
+
+    @property
+    def domain_facts_text(self) -> str:
+        return getattr(self, "_domain_facts_text", "")
+
+    def ensure_project_name(self, project_name: str) -> None:
+        if not self._project_name:
+            self._project_name = project_name
+
+    def set_domain_facts_text(self, text: str) -> None:
+        self._domain_facts_text = text
+
+    def extract_class_names_from_path(self, parsed_report: ParsedReport) -> list[str]:
+        return self._extract_class_names_from_path(parsed_report)
+
+    def load_global_constraints(
+        self,
+        source_root: str | None = None,
+        target_classes: list[str] | None = None,
+    ) -> str:
+        return self._load_global_constraints(
+            source_root=source_root,
+            target_classes=target_classes,
+        )
+
+    def select_combination_segments(
+        self,
+        analysis_result: AnalysisResult,
+        completed: CompletedPath,
+        segments: list,
+        path_space: dict,
+        combo: tuple,
+    ) -> list[dict] | None:
+        return self._select_combination_segments(
+            analysis_result, completed, segments, path_space, combo,
+        )
+
+    def select_feasible_path_segments(
+        self,
+        analysis_result: AnalysisResult,
+        completed: CompletedPath,
+        slice_mask: SliceMask | None = None,
+        max_rounds: int = 3,
+        segments: list | None = None,
+        cfg_cache: dict | None = None,
+        hard_constraints: list[str] | None = None,
+        blocked_paths: list[str] | None = None,
+        blocked_candidates: list[dict] | None = None,
+    ) -> list[dict] | None:
+        return self._select_feasible_path_segments(
+            analysis_result,
+            completed,
+            slice_mask=slice_mask,
+            max_rounds=max_rounds,
+            segments=segments,
+            cfg_cache=cfg_cache,
+            hard_constraints=hard_constraints,
+            blocked_paths=blocked_paths,
+            blocked_candidates=blocked_candidates,
+        )
+
+    def complete_constraints(
+        self,
+        analysis_result: AnalysisResult,
+        previous_conflicts: list[str] | None = None,
+        selected_branches: list[dict] | None = None,
+    ) -> CompletedPath:
+        return self._complete_constraints(
+            analysis_result,
+            previous_conflicts=previous_conflicts,
+            selected_branches=selected_branches,
+        )
+
+    def call_llm(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int | None = None,
+    ) -> str:
+        return self._call_llm(system_prompt, user_prompt, max_tokens=max_tokens)
+
+    def parse_json_response(self, raw: str, context: str) -> dict:
+        return self._parse_json_response(raw, context)
+
+    def parse_json_response_tolerant(self, raw: str, context: str) -> dict:
+        return self._parse_json_response_tolerant(raw, context)
+
+    def extract_code(self, raw: str) -> str:
+        return self._extract_code(raw)
+
+    def extract_callee_sources_for_prompt(self, parsed) -> str:
+        return self._extract_callee_sources_for_prompt(parsed)
+
+    def format_selected_branch_blueprint(
+        self, selections: list[dict] | None,
+    ) -> str:
+        return self._format_selected_branch_blueprint(selections)
+
+    def extract_source_context(self, parsed, max_lines: int = 80) -> str:
+        return self._source_extractor.extract(parsed).format_for_llm(
+            max_lines=max_lines,
+        )
 
     # ------------------------------------------------------------------
     # Step 1: Parse report and extract context (no LLM gap analysis)
@@ -3158,7 +3200,7 @@ class FPAnalyzer:
         """Bodies of the path's callees, for the POC and audit prompts.
 
         Shared by :meth:`generate_poc` and
-        :class:`~llm_client.fp_analysis.simulation_verifier.SimulationVerifier`
+        :class:`~fp_analysis.simulation_verifier.SimulationVerifier`
         (via ``self._analyzer``), so the generator and the auditor judge the
         same evidence.  Always best-effort: returns ``""`` on any failure, and
         never raises into the pipeline.
@@ -3451,25 +3493,7 @@ class FPAnalyzer:
         Also handles truncated responses where the closing `` ``` `` fence
         is missing (response cut off at token limit).
         """
-        text = raw.strip()
-
-        # Match complete ```json ... ``` block
-        match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
-        if match:
-            text = match.group(1).strip()
-        else:
-            # No closing fence — try matching opening fence only (truncated response)
-            match = re.match(r"```(?:json)?\s*\n?(.*)", text, re.DOTALL)
-            if match:
-                text = match.group(1).strip()
-
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse LLM %s output: %s\nRaw: %s", context, e, raw[:500])
-            raise RuntimeError(f"LLM returned invalid JSON for {context}: {e}")
-
-        return data
+        return _parse_json_response_text(raw, context)
 
     @staticmethod
     def _parse_json_response_tolerant(raw: str, context: str) -> dict:
@@ -3477,33 +3501,7 @@ class FPAnalyzer:
         response truncated at the token limit (e.g. an unterminated string) by
         repairing the cut-off JSON instead of failing.  Falls back to the strict
         parse first so fully-valid responses are handled identically."""
-        text = raw.strip()
-        match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
-        if match:
-            text = match.group(1).strip()
-        else:
-            match = re.match(r"```(?:json)?\s*\n?(.*)", text, re.DOTALL)
-            if match:
-                text = match.group(1).strip()
-
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError as e:
-            repaired = _repair_truncated_json(text)
-            if repaired is not None:
-                try:
-                    logger.warning(
-                        "LLM %s output was truncated at token limit; salvaged "
-                        "a repaired JSON prefix (%d chars).", context, len(repaired),
-                    )
-                    return json.loads(repaired)
-                except json.JSONDecodeError:
-                    pass
-            logger.error(
-                "Failed to parse LLM %s output: %s\nRaw: %s",
-                context, e, raw[:500],
-            )
-            raise RuntimeError(f"LLM returned invalid JSON for {context}: {e}")
+        return _parse_json_response_tolerant_text(raw, context)
 
     @staticmethod
     def _parse_completed_constraints(
@@ -3568,15 +3566,7 @@ class FPAnalyzer:
     @staticmethod
     def _extract_code(raw: str) -> str:
         """Extract C++ code from LLM response, stripping markdown fences."""
-        text = raw.strip()
-
-        # Try to extract code from markdown fence
-        match = re.search(r"```(?:cpp|c\+\+)?\s*\n?(.*?)```", text, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-
-        # If no fence found, assume the entire response is code
-        return text
+        return _extract_code_response(raw)
 
     # ------------------------------------------------------------------
     # Enhanced context formatting & validation
@@ -3659,7 +3649,7 @@ class FPAnalyzer:
         self, result: AnalysisResult, report_path: str
     ) -> None:
         """Save intermediate analysis data to a JSON file for debugging."""
-        report_name = Path(report_path).stem
+        report_name = ReportRef.parse(report_path).key
         output_dir = self._output_dir / report_name
         output_dir.mkdir(parents=True, exist_ok=True)
 

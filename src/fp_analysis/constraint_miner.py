@@ -172,7 +172,7 @@ def scan_field_implications(file_path: Path) -> list[FieldConsistencyRule]:
         }
         → flagField_ == true ⇒ ptrField_ != nullptr
 
-    The resulting ``FieldConsistencyRule``\ s have ``rule_type="implication"``
+    The resulting ``FieldConsistencyRule`` instances have ``rule_type="implication"``
     and are suitable for prompt injection as hard invariants.
     """
     try:
@@ -785,7 +785,7 @@ def _analyze_and_record(
     getter_cache: dict[str, str] | None = None,
 ) -> None:
     """Analyze constructor arguments and record constraints."""
-    from llm_client.fp_analysis.constraint_models import ConstraintSource
+    from fp_analysis.constraint_models import ConstraintSource
 
     source = ConstraintSource(file=file_rel, line=line_no, snippet="")
 

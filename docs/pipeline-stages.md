@@ -71,7 +71,7 @@
 
 ## 1. 阶段一览
 
-**编排住在 `fp_analysis/pipeline/`**（根目录的 `run_path_selection.py` 只是运行器：参数、`.env`、
+**编排住在 `pipeline/`**（根目录的 `run_path_selection.py` 只是运行器：参数、`.env`、
 `main()`、以及给评测工具用的兼容再导出）。`process_report`（`pipeline/runner.py`）就是这张表本身
 ——十个阶段 = 十次调用 `_stageN_*`，每个适配器的函数体是原先那个大函数的对应行范围**逐字**搬入。
 下表的"代码位置"给到模块级：`runner.*` 是阶段适配器，其余是不随阶段变化的实现模块。
@@ -577,7 +577,7 @@ leak `484-2`（FP）保持不翻转来验证。
 `fourcc`、`IndexFastScan`、`read_VectorTransform`、`test_merge`。
 
 ```bash
-PYTHONPATH=src python3.10 -m pytest tests/ -q
+python3.10 -m pytest tests/ -q
 python3.10 tools/probe_report_consistency.py <484-1> <484-2> <fourcc> <clone_index>
 python3.10 tools/replay_steps1to6.py <回归集>
 python3.10 tools/abc_compare.py      <回归集>

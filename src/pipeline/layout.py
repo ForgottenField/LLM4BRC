@@ -22,11 +22,11 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-#: The repository root.  ``src/llm_client/fp_analysis/pipeline/layout.py`` sits
-#: four levels down (pipeline → fp_analysis → llm_client → src → root); the
-#: older modules one level up use ``parents[3]``, so a module that moves into
-#: this subpackage must not keep their index.
-REPO_ROOT = Path(__file__).resolve().parents[4]
+#: The repository root.  ``src/pipeline/layout.py`` sits two levels below it
+#: (pipeline -> src -> root).  Keep this index local to the canonical package
+#: layout: path arithmetic inherited from the former nested package structure
+#: silently pointed at the filesystem root.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # A wrong index does not fail loudly on its own: it makes ``REPO_ROOT`` point at
 # ``src/``, so ``pdg_<project>.json``, ``cfg_cache/`` and the default ``output/``

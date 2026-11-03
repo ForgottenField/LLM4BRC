@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from llm_client.fp_analysis.path_analyzer import (
+from fp_analysis.path_analyzer import (
     _check_anchor_against_constraints,
     _evaluate_constraint_against_branch,
     _find_variable_in_condition,
@@ -180,7 +180,7 @@ class TestMergeState:
 
     def test_simple_merge(self):
         """Basic variable assignments are extracted."""
-        from llm_client.fp_analysis.path_analyzer import _merge_state
+        from fp_analysis.path_analyzer import _merge_state
         cumulative = {}
         _merge_state(cumulative, "x >= 10, ptr == NULL, flag == true")
         # Values include the operator for downstream prompt injection
@@ -188,21 +188,21 @@ class TestMergeState:
 
     def test_merge_overwrites_existing(self):
         """Later value overwrites earlier value for same variable."""
-        from llm_client.fp_analysis.path_analyzer import _merge_state
+        from fp_analysis.path_analyzer import _merge_state
         cumulative = {"x": "< 0"}
         _merge_state(cumulative, "x >= 10")
         assert cumulative["x"] == ">= 10"
 
     def test_empty_state_no_change(self):
         """Empty text doesn't alter cumulative state."""
-        from llm_client.fp_analysis.path_analyzer import _merge_state
+        from fp_analysis.path_analyzer import _merge_state
         cumulative = {"x": "> 0"}
         _merge_state(cumulative, "")
         assert cumulative == {"x": "> 0"}
 
     def test_merge_preserves_unrelated_vars(self):
         """Variables not mentioned in new state survive."""
-        from llm_client.fp_analysis.path_analyzer import _merge_state
+        from fp_analysis.path_analyzer import _merge_state
         cumulative = {"a": "1", "b": "2"}
         _merge_state(cumulative, "c == 3")
         # Value includes the operator

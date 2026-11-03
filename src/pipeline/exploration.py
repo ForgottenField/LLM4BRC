@@ -37,6 +37,7 @@ from pipeline.models import (
     SelectionContext,
     VerdictState,
 )
+from pipeline.outcomes import Verdict
 from pipeline.selection import (
     _last_round_reason,
     _no_path_verdict,
@@ -45,7 +46,7 @@ from pipeline.selection import (
     path_signature,
     run_path_selection,
 )
-from pipeline import stage_label, stage_step
+from pipeline.stages import stage_label, stage_step
 
 
 def _run_path_attempts(
@@ -193,7 +194,7 @@ def _run_path_attempts(
             final_step = stage_label(9)
             final_reason = ps_stats.get("result", "未找到全局一致可行路径")
             verdict_steps.append(f"{stage_label(9)} → {final_reason}（FP）")
-            verdict = "FP"
+            verdict = Verdict.FP
             break
 
         print(f"  attempt {attempt}: ✅ 找到全局一致可行路径（初始 TP）")
@@ -222,7 +223,7 @@ def _run_path_attempts(
         if _no_path is not None:
             final_step, final_reason = _no_path
             verdict_steps.append(f"{final_step} → 不作 TP 判定 → UNKNOWN")
-            verdict = "UNKNOWN"
+            verdict = Verdict.UNKNOWN
             print(f"\n  ⚠️ 报告只给出位置、没有路径（path_evidence="
                   f"{parsed_report.metadata.path_evidence}）→ 不作 POC 验证"
                   f"（逐步对照无报告路径可依）→ UNKNOWN")
@@ -274,7 +275,7 @@ def _run_path_attempts(
                 if leak_v == "tp" else
                 stage_step(10, "模拟执行反馈 → 测试用例模拟执行判定触发 bug（TP）")
             )
-            verdict = "TP"
+            verdict = Verdict.TP
             break
         if concl == "fp":
             final_reason = vres["final_reason"] or (
@@ -301,7 +302,7 @@ def _run_path_attempts(
                                   "该路径判定推广到整个路径空间 → FP")
                 )
                 ps_stats["generalized_fp"] = True
-                verdict = "FP"
+                verdict = Verdict.FP
                 print(f"  attempt {attempt}: ❌ 决定性 FP + 枚举分支全部根因无关"
                       f" → 压缩推广到整个路径空间 → FP (generalized)")
                 break
@@ -346,7 +347,7 @@ def _run_path_attempts(
                                       "推广到整个相关路径空间 → FP")
                     )
                     ps_stats["structural_generalized_fp"] = True
-                    verdict = "FP"
+                    verdict = Verdict.FP
                     print(f"  attempt {attempt}: ❌ 决定性结构性 FP + 根因指针 {var} 不变"
                           f" → 推广到整个相关路径空间 → FP (structural generalized)")
                     break
@@ -381,7 +382,7 @@ def _run_path_attempts(
             # keep the found path as TP (unverified), matching prior behavior.
             final_step = stage_label(9)
             verdict_steps.append(f"{stage_label(9)} → 找到全局一致可行路径（TP；验证出错未确认）")
-            verdict = "TP"
+            verdict = Verdict.TP
             break
 
         # ── unresolved (conflict): abandon path, block it, retry a different one ──
@@ -499,7 +500,7 @@ def _aggregate_exploration(
             not leak_tp_reasons
             and len(leak_fp_reasons) >= min_witnesses
         ):
-            verdict = "FP"
+            verdict = Verdict.FP
             final_step = stage_step(9, "leak 层一致性推广")
             final_reason = (
                 f"leak 层在 {len(leak_fp_reasons)} 条不同可行路径上一致判定 FP："
@@ -514,7 +515,7 @@ def _aggregate_exploration(
             ps_stats["leak_consensus_fp"] = True
             print(f"  ❌ leak 层一致性推广：{len(leak_fp_reasons)} 条路径一致判定 FP → FP")
         elif fp_observations and not saw_unresolved and full_space_explore:
-            verdict = "FP"
+            verdict = Verdict.FP
             final_step = stage_step(9, "路径探索聚合")
             final_reason = (
                 f"全空间探索（压缩相关空间穷尽）: 已探索 {len(fp_observations)} 条不同可行路径，"
@@ -533,7 +534,7 @@ def _aggregate_exploration(
                 undecided = f"探索后仍无确定结果（{len(fp_observations)} 条 FP 观察）"
             if leak_contradicted:
                 undecided += f"；{leak_note}"
-            verdict = "UNKNOWN"
+            verdict = Verdict.UNKNOWN
             final_step = stage_step(9, "路径遍历超限")
             final_reason = (
                 f"{undecided}；未穷举的可行空间中仍可能存在可行解，"

@@ -1,6 +1,6 @@
 # 报告处理前端（report frontend）
 
-本文描述 `src/llm_client/report_frontend/` 这一层：它把**任意一种静态分析器的错误报告**读成同一个
+本文描述 `src/report_frontend/` 这一层：它把**任意一种静态分析器的错误报告**读成同一个
 模型，并记录报告所指的**代码**。`docs/pipeline-stages.md` 是分类方法的权威描述，本文是它的**前置
 一章**——阶段 1 的第一件事现在就是调用这一层。
 
@@ -378,7 +378,7 @@ python3.10 run_path_selection.py --list-findings --report x.sarif
 **代码/语料实测**（本次重构后）：
 
 ```bash
-PYTHONPATH=src python3.10 -m pytest tests/ -q          # 1109 passed
+python3.10 -m pytest tests/ -q
 python3.10 tools/replay_steps1to6.py <回归集>          # 45/45 段解析, 10136 分支, 1 unresolved
 python3.10 tools/abc_compare.py      <回归集>          # clone_index 仍 2 段 / 4 分支 / bound 16
 ```

@@ -88,34 +88,38 @@ leak 层一致性推广、路径探索聚合——它们让**一条路径上的�
 ## 3. 仓库结构
 
 ```
-run_path_selection.py          # 薄运行器：argparse + .env + main + 兼容再导出（约 216 行）
-src/llm_client/
-  ├── base.py / factory.py     # LLMProvider 抽象层（deepseek / claude / gpt）
-  ├── errors.py                # 统一异常层级（provider 不许抛裸 SDK 错误）
-  ├── deepseek_provider.py     # 默认 provider（deepseek-chat）
-  ├── fp_analysis/             # ★ 判定核心
-  │   ├── pdg_*.py  slicer.py  slice_mask.py        # PDG/SDG + 切片
-  │   ├── cfg_*.py  condition_extractor.py          # CFG 解析、分段、分支抽取
-  │   ├── conflict_*.py  constraint_*.py            # 4 层冲突检查、约束挖掘/缓存
-  │   ├── path_space.py  branch_relevance.py        # 路径空间收集与压缩
+run_path_selection.py          # Thin runner: argparse + .env + main + compatibility exports
+src/
+  ├── llm_client/              # LLMProvider abstraction (DeepSeek / Claude / GPT)
+  │   ├── base.py / factory.py
+  │   ├── errors.py
+  │   └── *_provider.py
+  ├── report_frontend/         # HTML/SARIF adapters, canonical model, source resolution
+  ├── fp_analysis/             # Analysis engine
+  │   ├── pdg_*.py  slicer.py  slice_mask.py        # PDG/SDG and slicing
+  │   ├── cfg_*.py  condition_extractor.py          # CFG parsing and branch extraction
+  │   ├── conflict_*.py  constraint_*.py            # Conflict and constraint checks
+  │   ├── path_space.py  branch_relevance.py        # Path-space collection and reduction
   │   ├── cause_invariance.py  structural_pruning.py
-  │   ├── report_consistency.py                     # 阶段 6a
-  │   ├── entry_state.py                            # 阶段 6b
-  │   ├── domain_facts.py                           # 阶段 7 补充事实
-  │   ├── simulation_verifier.py                    # 阶段 10d 模拟执行审计
-  │   ├── path_analyzer.py                          # LLM 驱动的选路/POC 生成
-  │   └── pipeline/                                 # ★ 应用层：10 阶段编排 + CLI 语义
-  │       ├── runner.py                             #   process_report = 十次 _stageN_* 调用
-  │       ├── exploration.py                        #   尝试循环 + 事后聚合（唯一能推翻裁决处）
-  │       ├── stages.py  selection.py               #   阶段 1–5 驱动 / 阶段 9–10 驱动 + 判决文案
-  │       ├── project_paths.py  artifacts.py  batch.py  models.py  layout.py
-  └── csa_analysis/            # C++ 原生工具（PDG / 调用图 / 可达性 checker）
-      ├── pdg/PDGBuilder.cpp      build.sh   ← pdg_<project>.json 的生产者
+  │   ├── report_consistency.py                     # Stage 6a
+  │   ├── entry_state.py                            # Stage 6b
+  │   ├── domain_facts.py                           # Stage 7 facts
+  │   ├── simulation_verifier.py                    # Stage 10d simulated execution
+  │   ├── path_analyzer.py                          # LLM path selection and POC generation
+  │   └── llm_response.py  contracts.py             # Response parsing and narrow interfaces
+  ├── pipeline/                # Application layer: stage orchestration and CLI semantics
+  │   ├── runner.py                             # process_report calls the ten stages
+  │   ├── exploration.py                        # Attempt loop and post-loop aggregation
+  │   ├── stages.py  selection.py               # Stage 1-5 and 9-10 drivers
+  │   ├── outcomes.py  schemas.py  protocols.py # Verdict, result, and port contracts
+  │   └── project_paths.py  artifacts.py  batch.py  models.py  layout.py  io.py
+  └── csa_analysis/            # Native tools (PDG, call graph, reachability checker)
+      ├── pdg/PDGBuilder.cpp      build.sh   # pdg_<project>.json producer
       ├── callgraph/              build.sh
       └── checker/                build.sh
-tests/                         # pytest 套件（按子系统分组）
-tools/                         # 依赖图构建 + 回归/复现脚本
-docs/                          # 方法文档（见 §7）
+tests/                         # Test suite grouped by subsystem
+tools/                         # Dependency builders and regression tools
+docs/                          # Method documentation (see section 7)
 ```
 
 数据产物（**gitignore，可重建**）：
@@ -132,19 +136,24 @@ docs/                          # 方法文档（见 §7）
 ## 4. 环境要求
 
 - Linux
-- **`python3.10`**（pytest 与 `PYTHONPATH` 均以 3.10 为准）
+- **Python >= 3.10** (CI baseline: 3.10)
   > 注意：本机默认 `python3` 可能是 3.8，会在导入时抛
   > `TypeError: 'type' object is not subscriptable`（`llm_client/base.py` 里的 `list[dict[str, str]]`，
   > 该模块没有 `from __future__ import annotations`）。这个报错看起来完全不像 Python 版本问题——
   > 一律显式写 `python3.10`。
 - `clang++-14` + `llvm-config-14`（构建 C++ 插件，动态链接 `libclang-cpp`）
 - `cmake ≥ 3.16`
-- DeepSeek API key（默认 provider）
+- 所选 LLM Provider 的 API key（默认 DeepSeek）
 
-包**没有安装**（无 `setup.py`/`pyproject.toml`）：测试需要 `PYTHONPATH=src`；
-`run_path_selection.py` 自己把 `src/` 加进 `sys.path`，所以不需要。
+Provider API keys: `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, or
+`ANTHROPIC_API_KEY`.
+
+Project and test dependencies are managed by `pyproject.toml`:
 
 ```bash
+# Install the project and development dependencies.
+python3.10 -m pip install -e ".[dev]"
+
 # API key：放在仓库根的 .env（已 gitignore，绝不提交）
 echo 'DEEPSEEK_API_KEY=sk-...' > .env
 ```
@@ -154,12 +163,12 @@ echo 'DEEPSEEK_API_KEY=sk-...' > .env
 ## 5. 快速开始
 
 ```bash
-# 1) 测试套件（全绿基线）
-PYTHONPATH=src python3.10 -m pytest tests/ -q
+# 1) 测试套件
+python3.10 -m pytest tests/ -q
 
 # 2) 单个测试文件 / 单个用例
-PYTHONPATH=src python3.10 -m pytest tests/test_fp_analysis/test_conflict_checker.py
-PYTHONPATH=src python3.10 -m pytest tests/test_factory.py::TestProviderFactory::test_create_gpt_provider
+python3.10 -m pytest tests/test_fp_analysis/test_conflict_checker.py
+python3.10 -m pytest tests/test_factory.py::TestProviderFactory::test_create_gpt_provider
 
 # 3) 端到端跑一份报告（会调 LLM）
 python3.10 run_path_selection.py --report ~/csa_reports/project/faiss/reports/FP/report-index_read.cpp-read_index-484-1.html
@@ -184,6 +193,9 @@ python3.10 run_path_selection.py --scan-dir /path/to/reports --project faiss --m
 | `--path-space` | 打印每段可行路径空间的 ASCII 树 |
 | `--output` | 单报告时是结果文件路径；批量时是**目录**（默认 `output/path_selection_<report>.json`） |
 | `--batch-summary` | 批量聚合 JSON（默认 `output/batch_summary.json`），与 `--output` 分开以免互相覆盖 |
+| `--provider` | LLM provider: `deepseek` (default), `gpt`, or `claude` |
+| `--model` | Override the provider's default model |
+| `--llm-timeout` | Per-request LLM timeout in seconds (default: 120) |
 
 > **没有模式开关**：冲突驱动选路是唯一的选路机制，POC 验证恒开。
 > 历史上的 `--verify` / `--no-verify` / `--v2` / `FP_USE_CONFLICT_LEARNING` 已全部删除，请不要再加。
@@ -213,9 +225,9 @@ python3.10 tools/build_project_deps.py --check-config
 C++ 插件本身单独构建（产物落在各自的 `build/`）：
 
 ```bash
-bash src/llm_client/csa_analysis/pdg/build.sh        # → build/pdg_builder → pdg_<project>.json
-bash src/llm_client/csa_analysis/checker/build.sh    # 可达性 checker
-bash src/llm_client/csa_analysis/callgraph/build.sh
+bash src/csa_analysis/pdg/build.sh        # → build/pdg_builder → pdg_<project>.json
+bash src/csa_analysis/checker/build.sh    # 可达性 checker
+bash src/csa_analysis/callgraph/build.sh
 ```
 
 ⚠️ **产物版本必须与代码一致**：`pdg_<project>.json` 的 `Metadata["version"]` 需要等于
@@ -312,7 +324,7 @@ python3.10 tools/summarize_faiss_eval.py output
 
 ```bash
 # 全部测试
-PYTHONPATH=src python3.10 -m pytest tests/ -q
+python3.10 -m pytest tests/ -q
 ```
 
 在本仓库工作前请先读 [`CLAUDE.md`](CLAUDE.md)（架构索引 + 每条不变量背后的历史事故）

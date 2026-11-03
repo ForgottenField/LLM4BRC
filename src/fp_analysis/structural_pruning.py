@@ -27,7 +27,7 @@ Integration
 -----------
 Used as a **pre-pass** before :class:`ConflictChecker` (layers 1–4)::
 
-    from llm_client.fp_analysis.structural_pruning import (
+    from fp_analysis.structural_pruning import (
         StructuralPruner,
         build_pruner_from_segments,
     )

@@ -64,6 +64,8 @@ from pipeline.artifacts import (
     report_out_path,
 )
 from pipeline.batch import collect_reports, is_report_file, run_batch
+from pipeline.layout import DEFAULT_PROJECTS_DIR
+from pipeline.outcomes import Verdict, VerificationConclusion
 from pipeline.runner import process_report
 from pipeline.stages import stage_label, stage_step
 from pipeline.project_paths import (
@@ -96,6 +98,9 @@ __all__ = [
     "stage_label",
     "stage_step",
     "is_report_file",
+    "DEFAULT_PROJECTS_DIR",
+    "Verdict",
+    "VerificationConclusion",
     "check_pdg_artifact_version",
     "infer_source_root",
     "resolve_paths",

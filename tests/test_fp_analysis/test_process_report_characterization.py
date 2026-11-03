@@ -47,7 +47,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from fp_analysis.cfg_models import SegmentInfo  # noqa: E402
-from llm_client.fp_analysis.models import ParsedReport, ReportMetadata  # noqa: E402
+from fp_analysis.models import ParsedReport, ReportMetadata  # noqa: E402
 from fp_analysis.pdg_models import SDG  # noqa: E402
 from pipeline import exploration as pipeline_exploration  # noqa: E402
 from pipeline import runner as pipeline_runner
@@ -96,12 +96,30 @@ class _FakeAnalyzer:
 
     last: "_FakeAnalyzer | None" = None
 
-    def __init__(self, llm_config=None, source_root="", pdg_path="", report_format=None):
-        self._model = "fake-model"
+    def __init__(self, llm_config=None, model="fake-model", source_root="",
+                 pdg_path="", report_format=None):
+        self._model = model
         self.source_root = source_root
         self._domain_facts_text = "<unset>"
         self.semantic_reason: str | None = None
         _FakeAnalyzer.last = self
+
+    @property
+    def model_name(self):
+        return self._model
+
+    @property
+    def domain_facts_text(self):
+        return self._domain_facts_text
+
+    def set_domain_facts_text(self, text):
+        self._domain_facts_text = text
+
+    def extract_class_names_from_path(self, parsed):
+        return self._extract_class_names_from_path(parsed)
+
+    def load_global_constraints(self, root, target_classes=None):
+        return self._load_global_constraints(root, target_classes)
 
     def _extract_class_names_from_path(self, parsed):
         return set()
