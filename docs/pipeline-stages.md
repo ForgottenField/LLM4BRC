@@ -577,17 +577,17 @@ leak `484-2`（FP）保持不翻转来验证。
 `fourcc`、`IndexFastScan`、`read_VectorTransform`、`test_merge`。
 
 ```bash
-python3.10 -m pytest tests/ -q
-python3.10 tools/probe_report_consistency.py <484-1> <484-2> <fourcc> <clone_index>
-python3.10 tools/replay_steps1to6.py <回归集>
-python3.10 tools/abc_compare.py      <回归集>
+python3 -m pytest tests/ -q
+python3 tools/probe_report_consistency.py <484-1> <484-2> <fourcc> <clone_index>
+python3 tools/replay_steps1to6.py <回归集>
+python3 tools/abc_compare.py      <回归集>
 ```
 
 **报告前端自查**（不需要 API key）：
 
 ```bash
-python3.10 run_path_selection.py --list-formats                  # 已注册的适配器
-python3.10 run_path_selection.py --list-findings --report x.sarif # 一份文档里的 finding
+python3 run_path_selection.py --list-formats                  # 已注册的适配器
+python3 run_path_selection.py --list-findings --report x.sarif # 一份文档里的 finding
 ```
 
 **种子集回归**（改 `build_project_deps` 或解析阶梯后必跑）：把改动前后的

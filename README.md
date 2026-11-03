@@ -136,11 +136,7 @@ docs/                          # Method documentation (see section 7)
 ## 4. 环境要求
 
 - Linux
-- **Python >= 3.10** (CI baseline: 3.10)
-  > 注意：本机默认 `python3` 可能是 3.8，会在导入时抛
-  > `TypeError: 'type' object is not subscriptable`（`llm_client/base.py` 里的 `list[dict[str, str]]`，
-  > 该模块没有 `from __future__ import annotations`）。这个报错看起来完全不像 Python 版本问题——
-  > 一律显式写 `python3.10`。
+- **Python >= 3.13** (local runtime and CI baseline: 3.13)
 - `clang++-14` + `llvm-config-14`（构建 C++ 插件，动态链接 `libclang-cpp`）
 - `cmake ≥ 3.16`
 - 所选 LLM Provider 的 API key（默认 DeepSeek）
@@ -152,7 +148,7 @@ Project and test dependencies are managed by `pyproject.toml`:
 
 ```bash
 # Install the project and development dependencies.
-python3.10 -m pip install -e ".[dev]"
+python3 -m pip install -e ".[dev]"
 
 # API key：放在仓库根的 .env（已 gitignore，绝不提交）
 echo 'DEEPSEEK_API_KEY=sk-...' > .env
@@ -164,19 +160,19 @@ echo 'DEEPSEEK_API_KEY=sk-...' > .env
 
 ```bash
 # 1) 测试套件
-python3.10 -m pytest tests/ -q
+python3 -m pytest tests/ -q
 
 # 2) 单个测试文件 / 单个用例
-python3.10 -m pytest tests/test_fp_analysis/test_conflict_checker.py
-python3.10 -m pytest tests/test_factory.py::TestProviderFactory::test_create_gpt_provider
+python3 -m pytest tests/test_fp_analysis/test_conflict_checker.py
+python3 -m pytest tests/test_factory.py::TestProviderFactory::test_create_gpt_provider
 
 # 3) 端到端跑一份报告（会调 LLM）
-python3.10 run_path_selection.py --report ~/csa_reports/project/faiss/reports/FP/report-index_read.cpp-read_index-484-1.html
-python3.10 run_path_selection.py --source-root ~/csa_reports/project/faiss --report <report.html>
+python3 run_path_selection.py --report ~/csa_reports/project/faiss/reports/FP/report-index_read.cpp-read_index-484-1.html
+python3 run_path_selection.py --source-root ~/csa_reports/project/faiss --report <report.html>
 
 # 4) 批量：扫描 <projects-dir>/<project>/reports/{TP,FP}
-python3.10 run_path_selection.py --project ~/csa_reports/project/faiss
-python3.10 run_path_selection.py --scan-dir /path/to/reports --project faiss --max-reports 5
+python3 run_path_selection.py --project ~/csa_reports/project/faiss
+python3 run_path_selection.py --scan-dir /path/to/reports --project faiss --max-reports 5
 ```
 
 主要 CLI 参数：
@@ -212,14 +208,14 @@ python3.10 run_path_selection.py --scan-dir /path/to/reports --project faiss --m
 
 ```bash
 # 按需：种子 = bug 宿主文件 + 报告路径上的每个 event 文件，闭包补跨 TU 被调者
-python3.10 tools/build_project_deps.py --project protobuf \
+python3 tools/build_project_deps.py --project protobuf \
     --on-demand ~/csa_reports/project/protobuf/reports
 
 # 只看清单不构建（种子 TU / 被调闭包 / 编译参数 / 语法通过率）
-python3.10 tools/build_project_deps.py --project protobuf --on-demand <dir> --dry-run
+python3 tools/build_project_deps.py --project protobuf --on-demand <dir> --dry-run
 
 # 校验 PROJECT_SPECS 与 cfg_parser._CFG_PROJECT_CONFIGS 是否漂移，并列出每个 pdg_*.json 的 OK/STALE
-python3.10 tools/build_project_deps.py --check-config
+python3 tools/build_project_deps.py --check-config
 ```
 
 C++ 插件本身单独构建（产物落在各自的 `build/`）：
@@ -256,16 +252,16 @@ bash src/csa_analysis/callgraph/build.sh
 
 ```bash
 # 确定性阶段 1–6（无 LLM），打印每段 fn/file/CFG key/分支数
-python3.10 tools/replay_steps1to6.py <reports...>
+python3 tools/replay_steps1to6.py <reports...>
 
 # 同一批报告跑两遍（A/B/C 剪枝 关 vs 开），对比节点/分支数与整路径 bound
-python3.10 tools/abc_compare.py      <reports...>
+python3 tools/abc_compare.py      <reports...>
 
 # 阶段 6 的两条闸门（6b 入口状态制造 + 6a 矛盾检测）+ claim 直方图
-python3.10 tools/probe_report_consistency.py <reports...>
+python3 tools/probe_report_consistency.py <reports...>
 
 # 按 ground truth 汇总 output/ 下的结果 JSON
-python3.10 tools/summarize_faiss_eval.py output
+python3 tools/summarize_faiss_eval.py output
 ```
 
 **回归集**：`484-2`、`484-1`、`clone_index`（必须保持 2 段 / 4 分支 / bound 16）、
@@ -324,7 +320,7 @@ python3.10 tools/summarize_faiss_eval.py output
 
 ```bash
 # 全部测试
-python3.10 -m pytest tests/ -q
+python3 -m pytest tests/ -q
 ```
 
 在本仓库工作前请先读 [`CLAUDE.md`](CLAUDE.md)（架构索引 + 每条不变量背后的历史事故）

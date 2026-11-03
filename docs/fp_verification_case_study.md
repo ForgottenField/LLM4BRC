@@ -10,7 +10,7 @@
 > 本文档完整记录两个真实案例 —— `MemoryTest` 与 `XlogTest`，说明它们为何本质是 **False Positive (FP)**，以及验证流程如何通过**多轮测试用例的模拟执行**最终将其成功判定为 FP。
 >
 > 项目：`bug_report_classification`（Clang Static Analyzer 报告的 LLM 辅助 FP 检测 / POC 生成流水线）
-> 验证命令：`python3.10 run_path_selection.py --project <folly_root> --report <report.html>`
+> 验证命令：`python3 run_path_selection.py --project <folly_root> --report <report.html>`
 > （POC 验证默认开启，无需传开关）
 > 产出 JSON：`output/path_selection_report-*.json`（含 `poc_verification.simulation` 逐轮记录）
 

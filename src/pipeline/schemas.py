@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, NotRequired, TypedDict
+from typing import Any, TypedDict
 
 
 class ReportIdentity(TypedDict):
@@ -63,17 +63,17 @@ class ResultDocument(TypedDict, total=False):
     verdict_reason: str | None
     verdict_steps: list[str]
     total_elapsed_sec: float
-    project: NotRequired[str]
-    assumption_check: NotRequired[AssumptionCheck]
-    branch_filter: NotRequired[BranchFilter]
-    path_selection: NotRequired[PathSelection]
-    path_space: NotRequired[dict[str, Any]]
-    slice_relevance: NotRequired[dict[str, Any]]
-    context_insensitive: NotRequired[dict[str, Any]]
-    verification_status: NotRequired[str]
-    verification_flipped_to_fp: NotRequired[bool]
-    poc_verification: NotRequired[dict[str, Any]]
-    code_model: NotRequired[dict[str, Any]]
-    report_self_contradiction: NotRequired[dict[str, Any]]
-    entry_state_fabrication: NotRequired[dict[str, Any]]
-    semantic_feasibility: NotRequired[dict[str, Any]]
+    project: str
+    assumption_check: AssumptionCheck
+    branch_filter: BranchFilter
+    path_selection: PathSelection
+    path_space: dict[str, Any]
+    slice_relevance: dict[str, Any]
+    context_insensitive: dict[str, Any]
+    verification_status: str
+    verification_flipped_to_fp: bool
+    poc_verification: dict[str, Any]
+    code_model: dict[str, Any]
+    report_self_contradiction: dict[str, Any]
+    entry_state_fabrication: dict[str, Any]
+    semantic_feasibility: dict[str, Any]

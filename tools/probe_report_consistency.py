@@ -11,8 +11,8 @@ Runs the deterministic stages (1-6) — same harness as
   * every self-contradiction found.
 
 Usage:
-    python3.10 tools/probe_report_consistency.py [--project <name>] <report|dir> ...
-    python3.10 tools/probe_report_consistency.py --project protobuf \
+    python3 tools/probe_report_consistency.py [--project <name>] <report|dir> ...
+    python3 tools/probe_report_consistency.py --project protobuf \
         ~/csa_reports/project/protobuf/reports
 
 The project must be named explicitly (``--project``, default ``faiss``): the

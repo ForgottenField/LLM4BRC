@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.10
+#!/usr/bin/env python3
 """On-demand dependency-graph builder (PDG + CFG cache) for a CSA target project.
 
 Why on-demand: later targets (protobuf, grpc, duckdb, ...) are large enough that
@@ -18,14 +18,14 @@ Both (2) and (3) are rebuildable artifacts; only the seed selection is knowledge
 Usage::
 
     # on-demand: seeds come from the reports' own event files
-    python3.10 tools/build_project_deps.py --project protobuf --on-demand \
+    python3 tools/build_project_deps.py --project protobuf --on-demand \
         ~/csa_reports/project/protobuf/reports
 
     # explicit TU list (no reports involved)
-    python3.10 tools/build_project_deps.py --project foo --files a.cc b.cc
+    python3 tools/build_project_deps.py --project foo --files a.cc b.cc
 
     # dry run: show the seed set / flags / compile-db, build nothing
-    python3.10 tools/build_project_deps.py --project protobuf --on-demand <dir> --dry-run
+    python3 tools/build_project_deps.py --project protobuf --on-demand <dir> --dry-run
 
 Design notes / invariants:
 

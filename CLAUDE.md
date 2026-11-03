@@ -19,40 +19,40 @@ The source tree uses a standard `src/` layout with peer packages
 
 ## Commands
 
-The project uses a standard `src/` layout and declares its dependencies in
-`pyproject.toml`. Install it for development with
-`python3.10 -m pip install -e ".[dev]"`. The top-level packages
+The project targets the local Python 3.13 environment and uses a standard
+`src/` layout. Dependencies are declared in `pyproject.toml`. Install it for
+development with `python3 -m pip install -e ".[dev]"`. The top-level packages
 `csa_analysis`, `fp_analysis`, `llm_client`, `pipeline`, and `report_frontend`
 are the canonical import paths.
 
 ```bash
 # Run all tests
-python3.10 -m pytest tests/
+python3 -m pytest tests/
 
 # Single test file / single test
-python3.10 -m pytest tests/test_fp_analysis/test_conflict_checker.py
-python3.10 -m pytest tests/test_factory.py::TestProviderFactory::test_create_gpt_provider
+python3 -m pytest tests/test_fp_analysis/test_conflict_checker.py
+python3 -m pytest tests/test_factory.py::TestProviderFactory::test_create_gpt_provider
 
 # Deterministic-stage regression (no LLM) — see docs/pipeline-stages.md §9
-python3.10 tools/replay_steps1to6.py <reports...>
-python3.10 tools/abc_compare.py      <reports...>
-python3.10 tools/probe_report_consistency.py <reports...>
+python3 tools/replay_steps1to6.py <reports...>
+python3 tools/abc_compare.py      <reports...>
+python3 tools/probe_report_consistency.py <reports...>
 ```
 
 ### Main end-to-end entry point
 
 ```bash
 # Loads DEEPSEEK_API_KEY from ./.env; exits if unset
-python3.10 run_path_selection.py --report <path/to/report.html>
-python3.10 run_path_selection.py --report <path> --source-root ~/csa_reports/project/faiss
-python3.10 run_path_selection.py --project ~/csa_reports/project/faiss   # batch: scans reports/{TP,FP}
-python3.10 run_path_selection.py --scan-dir /path/to/reports --pdg pdg_faiss.json
+python3 run_path_selection.py --report <path/to/report.html>
+python3 run_path_selection.py --report <path> --source-root ~/csa_reports/project/faiss
+python3 run_path_selection.py --project ~/csa_reports/project/faiss   # batch: scans reports/{TP,FP}
+python3 run_path_selection.py --scan-dir /path/to/reports --pdg pdg_faiss.json
 
 # Other report formats (see docs/report-frontend.md); these two need no API key
-python3.10 run_path_selection.py --report results.sarif --report-format sarif
-python3.10 run_path_selection.py --report 'results.sarif::cpp/leap-year@AlignedTable.h:66'
-python3.10 run_path_selection.py --list-formats
-python3.10 run_path_selection.py --list-findings --report results.sarif
+python3 run_path_selection.py --report results.sarif --report-format sarif
+python3 run_path_selection.py --report 'results.sarif::cpp/leap-year@AlignedTable.h:66'
+python3 run_path_selection.py --list-formats
+python3 run_path_selection.py --list-findings --report results.sarif
 ```
 
 One *finding* is one unit of work: `--scan-dir`/`--project` expand a multi-finding document
@@ -65,13 +65,9 @@ feedback loop → TP/FP/UNKNOWN) always runs. `--report-format` is not a mode sw
 pins the adapter when two formats score equally; `--list-formats`/`--list-findings` are the
 self-check flags, and both exit before the API-key check.
 
-`run_path_selection.py` adds `src/` to `sys.path` itself (so no `PYTHONPATH` is
-needed), but it still needs `.env` for `DEEPSEEK_API_KEY` — **and Python ≥ 3.9**.
-On a box whose default `python3` is older, `python3` fails at import with
-`TypeError: 'type' object is not subscriptable` (`list[dict[str, str]]` in
-`llm_client/base.py`, evaluated at class-definition time because that module
-has no `from __future__ import annotations`), which looks nothing like a Python
-version problem. Use `python3.10` explicitly, as the commands above do.
+`run_path_selection.py` adds `src/` to `sys.path` itself, so no `PYTHONPATH` is
+needed. The supported runtime baseline is Python 3.13, matching the local
+development environment and CI.
 
 ### C++ native tooling
 

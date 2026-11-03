@@ -7,7 +7,7 @@ name = "llm4brc"
 version = "0.1.0"
 description = "LLM-assisted false-positive classification for static-analysis reports"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 dependencies = [
   "openai>=1.0,<3",
   "pydantic>=2,<3",

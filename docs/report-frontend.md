@@ -249,10 +249,10 @@ ReportRef.parse("/x/faiss.sarif::cpp/leap-year@AlignedTable.h:66")
 `_collect_reports`（`pipeline.batch`）一侧。
 
 ```bash
-python3.10 run_path_selection.py --report <report.html | report.sarif[::<finding>]>
-python3.10 run_path_selection.py --report x.sarif --report-format sarif
-python3.10 run_path_selection.py --list-formats
-python3.10 run_path_selection.py --list-findings --report x.sarif
+python3 run_path_selection.py --report <report.html | report.sarif[::<finding>]>
+python3 run_path_selection.py --report x.sarif --report-format sarif
+python3 run_path_selection.py --list-formats
+python3 run_path_selection.py --list-findings --report x.sarif
 ```
 
 - `--report-format` 钉住适配器（绕过探测歧义）；`--list-formats` 打印适配器表；
@@ -378,9 +378,9 @@ python3.10 run_path_selection.py --list-findings --report x.sarif
 **代码/语料实测**（本次重构后）：
 
 ```bash
-python3.10 -m pytest tests/ -q
-python3.10 tools/replay_steps1to6.py <回归集>          # 45/45 段解析, 10136 分支, 1 unresolved
-python3.10 tools/abc_compare.py      <回归集>          # clone_index 仍 2 段 / 4 分支 / bound 16
+python3 -m pytest tests/ -q
+python3 tools/replay_steps1to6.py <回归集>          # 45/45 段解析, 10136 分支, 1 unresolved
+python3 tools/abc_compare.py      <回归集>          # clone_index 仍 2 段 / 4 分支 / bound 16
 ```
 
 **"读码通道"收敛后的两条实测基线**（2026-09-29，`source_context`/`entry_state` 改走代码模型）：

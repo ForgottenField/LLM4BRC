@@ -5,7 +5,9 @@
 > 以本次 **faiss** 的实际构建为实例，最后给出**统一化（多项目一键式）**的分析与推荐方案。
 >
 > 项目：`bug_report_classification`
-> 运行环境：Linux；`python3.10`（pytest/PYTHONPATH 均以 3.10 为准）；`clang++-14` / `llvm-config-14`；系统 cmake 3.16（faiss 因此无法 cmake 生成编译数据库，需手写）。
+> Runtime: Linux with Python 3.13 (local and CI baseline), `clang++-14`,
+> `llvm-config-14`, and system CMake 3.16. The faiss build therefore uses a
+> handwritten compile database.
 
 ---
 
@@ -246,7 +248,7 @@ protobuf 全套缓存因此从 **30.8 GB 降到 35 MB**；faiss/folly 的既有�
 
 ```bash
 set -a; . ./.env; set +a     # DEEPSEEK_API_KEY
-python3.10 run_path_selection.py --project /home/yanghengqin/csa_reports/project/faiss \
+python3 run_path_selection.py --project /home/yanghengqin/csa_reports/project/faiss \
   --report .../reports/FP/report-index_read.cpp-read_index-484-1.html \
   --output output/faiss_smoke_readindex.json
 ```
@@ -377,17 +379,17 @@ protobuf 实测：21 份报告 → **17 个种子 TU**，闭包再补 **4 个**�
 
 ```bash
 # 按需（种子来自报告；默认写 pdg_<proj>.json + 预热 cfg_cache/<proj>/）
-python3.10 tools/build_project_deps.py --project protobuf \
+python3 tools/build_project_deps.py --project protobuf \
     --on-demand ~/csa_reports/project/protobuf/reports
 
 # 先看清单不构建：种子 TU / 被调闭包 / 编译参数 / 语法通过率
-python3.10 tools/build_project_deps.py --project protobuf --on-demand <dir> --dry-run
+python3 tools/build_project_deps.py --project protobuf --on-demand <dir> --dry-run
 
 # 显式给 TU（不涉及报告）
-python3.10 tools/build_project_deps.py --project foo --files a.cc b.cc
+python3 tools/build_project_deps.py --project foo --files a.cc b.cc
 
 # 校验 PROJECT_SPECS 与 cfg_parser._CFG_PROJECT_CONFIGS 是否一致
-python3.10 tools/build_project_deps.py --project protobuf --on-demand <dir> --check-config
+python3 tools/build_project_deps.py --project protobuf --on-demand <dir> --check-config
 ```
 
 流程：`[1] 种子 → [2] 被调闭包 → [3] 编译参数 → [4] 逐 TU -fsyntax-only 闸门 →`（非 dry-run）`[5] 写 compile db
