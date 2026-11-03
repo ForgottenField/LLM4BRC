@@ -15,7 +15,7 @@ from report_frontend.report_model import (
     CONSTRAINT_STEP_KINDS,
     AnalyzerKind,
     BugFinding,
-    ReportDocument,
+    ReportModel,
     ReportFormat,
     Severity,
     SourceLocation,
@@ -83,8 +83,8 @@ class TestTraceStep:
         )
         assert step.file == "a.cpp"
         assert step.line == 9
-        assert step.is_call and not step.is_control
-        assert not step.is_error_start
+        assert step.is_call_step and not step.is_control_step
+        assert not step.is_error_start_step
         assert step.is_constraint is False
 
     def test_assume_is_a_constraint(self) -> None:
@@ -157,16 +157,16 @@ class TestBugFinding:
 
 class TestReportDocument:
     @pytest.fixture
-    def document(self) -> ReportDocument:
+    def document(self) -> ReportModel:
         def mk(fid: str, rule: str, file: str, line: int) -> BugFinding:
             return BugFinding(
                 finding_id=fid, analyzer=AnalyzerKind.CODEQL, rule_id=rule,
                 message="m", location=SourceLocation(file=file, line=line),
             )
 
-        return ReportDocument(
+        return ReportModel(
             path="x.sarif",
-            format=ReportFormat.SARIF,
+            format=ReportFormat.CODEQL_SARIF,
             analyzer=AnalyzerKind.CODEQL,
             findings=[
                 mk("cpp/a@faiss/impl/index_read.cpp:12",
@@ -176,7 +176,7 @@ class TestReportDocument:
             ],
         )
 
-    def test_is_multi_finding(self, document: ReportDocument) -> None:
+    def test_is_multi_finding(self, document: ReportModel) -> None:
         assert document.is_multi_finding
 
     @pytest.mark.parametrize("selector", [
@@ -186,17 +186,17 @@ class TestReportDocument:
         "index_read.cpp:12",                     # basename:line
         "cpp/a@index_read.cpp:12",               # rule@basename:line
     ])
-    def test_selectors(self, document: ReportDocument, selector: str) -> None:
+    def test_selectors(self, document: ReportModel, selector: str) -> None:
         found = document.finding(selector)
         assert found is not None, selector
         assert found.rule_id == "cpp/a"
 
-    def test_unmatched_selector_returns_none(self, document: ReportDocument) -> None:
+    def test_unmatched_selector_returns_none(self, document: ReportModel) -> None:
         assert document.finding("nope") is None
 
-    def test_round_trip(self, document: ReportDocument) -> None:
-        back = ReportDocument.from_dict(document.to_dict())
-        assert back.format is ReportFormat.SARIF
+    def test_round_trip(self, document: ReportModel) -> None:
+        back = ReportModel.from_dict(document.to_dict())
+        assert back.format is ReportFormat.CODEQL_SARIF
         assert [f.finding_id for f in back.findings] == [
             f.finding_id for f in document.findings
         ]
