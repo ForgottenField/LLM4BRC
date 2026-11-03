@@ -278,7 +278,7 @@ class SarifAdapter(ReportAdapter):
     """Parser for SARIF 2.1.0 — CodeQL, Infer, Cppcheck and friends."""
 
     name = "sarif"
-    format = ReportFormat.SARIF
+    format = ReportFormat.CODEQL_SARIF
     analyzer = AnalyzerKind.UNKNOWN  # refined per document from tool.driver.name
     suffixes = (".sarif", ".sarif.json")
 
@@ -350,7 +350,7 @@ class SarifAdapter(ReportAdapter):
             )
         return ReportModel(
             path=path,
-            format=ReportFormat.SARIF,
+            format=ReportFormat.CODEQL_SARIF,
             analyzer=analyzer,
             findings=findings,
             source_root_hint=hint,
