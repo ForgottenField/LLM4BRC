@@ -33,7 +33,7 @@ from .report_model import (
     FRONTEND_MODEL_VERSION,
     AnalyzerKind,
     BugFinding,
-    ReportDocument,
+    ReportModel,
     ReportFormat,
 )
 from .registry import detect_adapter, finding_for

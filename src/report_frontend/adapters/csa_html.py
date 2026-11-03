@@ -70,7 +70,7 @@ from ..report_model import (
     AnalyzerKind,
     BugFinding,
     PathEvidence,
-    ReportDocument,
+    ReportModel,
     ReportFormat,
     Severity,
     SourceLocation,
@@ -303,7 +303,7 @@ class CsaHtmlAdapter(ReportAdapter):
 
     # -- adapter interface -------------------------------------------------
 
-    def load(self, path: Path, text: str) -> ReportDocument:
+    def load(self, path: Path, text: str) -> ReportModel:
         meta = self.extract_metadata(text)
         doc_index = _build_doc_index(text, fallback_file=str(meta.get("bug_file", "")))
         events = self._extract_events(text, doc_index=doc_index)
@@ -360,7 +360,7 @@ class CsaHtmlAdapter(ReportAdapter):
                 "doc_index_sections": len(doc_index[0]),
             },
         )
-        return ReportDocument(
+        return ReportModel(
             path=path,
             format=ReportFormat.CSA_HTML,
             analyzer=AnalyzerKind.CSA,

@@ -57,7 +57,7 @@ from ..report_model import (
     AnalyzerKind,
     BugFinding,
     PathEvidence,
-    ReportDocument,
+    ReportModel,
     ReportFormat,
     Severity,
     SourceLocation,
@@ -300,7 +300,7 @@ class SarifAdapter(ReportAdapter):
 
     # -- adapter interface -------------------------------------------------
 
-    def load(self, path: Path, text: str) -> ReportDocument:
+    def load(self, path: Path, text: str) -> ReportModel:
         try:
             data = json.loads(text)
         except json.JSONDecodeError as exc:
@@ -348,7 +348,7 @@ class SarifAdapter(ReportAdapter):
             raise ReportParseError(
                 f"{Path(path).name}: SARIF document with no results"
             )
-        return ReportDocument(
+        return ReportModel(
             path=path,
             format=ReportFormat.SARIF,
             analyzer=analyzer,
@@ -494,7 +494,7 @@ class SarifAdapter(ReportAdapter):
         )
 
 
-def parse_sarif(path: Path, text: str | None = None) -> ReportDocument:
+def parse_sarif(path: Path, text: str | None = None) -> ReportModel:
     """Convenience: parse a SARIF file without going through detection."""
     if text is None:
         if not path.exists():

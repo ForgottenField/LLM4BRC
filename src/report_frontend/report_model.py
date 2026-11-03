@@ -120,7 +120,7 @@ class Severity(str, Enum):
         return cls.UNKNOWN
 
 
-class ReportStepKind(str, Enum):
+class StepKind(str, Enum):
     """What one step of a reported path *is*.
 
     The vocabulary is the union of what the analyzers express, deliberately
@@ -143,13 +143,13 @@ class ReportStepKind(str, Enum):
     @property
     def is_boundary(self) -> bool:
         """True for the kinds that segment a path (see ``cfg_feasibility``)."""
-        return self in (ReportStepKind.CONTROL, ReportStepKind.CALL, ReportStepKind.RETURN, ReportStepKind.REPORT)
+        return self in (StepKind.CONTROL, StepKind.CALL, StepKind.RETURN, StepKind.REPORT)
 
 
 #: Step kinds that assert a constraint the report relies on.  CSA's path
 #: wording for these is ``Assuming …``; stages 4 and 6b scan exactly this set.
-CONSTRAINT_STEP_KINDS: frozenset[ReportStepKind] = frozenset(
-    {ReportStepKind.ASSUME, ReportStepKind.CONTROL}
+CONSTRAINT_STEP_KINDS: frozenset[StepKind] = frozenset(
+    {StepKind.ASSUME, StepKind.CONTROL}
 )
 
 
@@ -264,7 +264,7 @@ class TraceStep:
     """
 
     index: int = 0
-    kind: ReportStepKind = ReportStepKind.EVENT
+    kind: StepKind = StepKind.EVENT
     location: SourceLocation = field(default_factory=SourceLocation)
     message: str = ""
     function: str = ""
@@ -288,15 +288,15 @@ class TraceStep:
 
     @property
     def is_error_start_step(self) -> bool:
-        return self.kind is ReportStepKind.ERROR_START
+        return self.kind is StepKind.ERROR_START
 
     @property
     def is_call_step(self) -> bool:
-        return self.kind is ReportStepKind.CALL
+        return self.kind is StepKind.CALL
 
     @property
     def is_control_step(self) -> bool:
-        return self.kind is ReportStepKind.CONTROL
+        return self.kind is StepKind.CONTROL
 
     @property
     def is_constraint(self) -> bool:
@@ -321,7 +321,7 @@ class TraceStep:
     def from_dict(cls, data: dict[str, Any]) -> "TraceStep":
         return cls(
             index=int(data.get("index", 0) or 0),
-            kind=ReportStepKind(data.get("kind", "event")),
+            kind=StepKind(data.get("kind", "event")),
             location=SourceLocation.from_dict(data.get("location", {}) or {}),
             message=str(data.get("message", "")),
             function=str(data.get("function", "")),
@@ -403,10 +403,10 @@ class BugFinding:
         return self.path_evidence is PathEvidence.TRACE
 
     @property
-    def error_start(self) -> Optional[ReportStepKind]:
+    def error_start(self) -> Optional[StepKind]:
         """The step where the flagged value/state originates, if reported."""
         for step in self.steps:
-            if step.kind is ReportStepKind.ERROR_START:
+            if step.kind is StepKind.ERROR_START:
                 return step
         return None
 
@@ -420,7 +420,7 @@ class BugFinding:
         """Callee names in call order (``error_start``-independent)."""
         return [s.callee for s in self.calls if s.callee]
 
-    def steps_of(self, *kinds: ReportStepKind) -> list[ReportStepKind]:
+    def steps_of(self, *kinds: StepKind) -> list[StepKind]:
         wanted = set(kinds)
         return [s for s in self.steps if s.kind in wanted]
 

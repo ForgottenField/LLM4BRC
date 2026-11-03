@@ -24,7 +24,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 from .errors import ReportFrontendError, UnsupportedReportFormat
-from .report_model import AnalyzerKind, BugFinding, ReportDocument, ReportFormat
+from .report_model import AnalyzerKind, BugFinding, ReportModel, ReportFormat
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ class ReportAdapter(ABC):
     # -- parsing -----------------------------------------------------------
 
     @abstractmethod
-    def load(self, path: Path, text: str) -> ReportDocument:
+    def load(self, path: Path, text: str) -> ReportModel:
         """Parse *text* (the whole document) into canonical findings.
 
         ``text`` is passed in rather than re-read so a document is decoded once
@@ -168,7 +168,7 @@ def detect_adapter(path: Path, override: str | None = None) -> ReportAdapter:
 
 def load_document(
     path: Path, override: str | None = None, text: str | None = None
-) -> ReportDocument:
+) -> ReportModel:
     """Detect + parse.  The frontend's single entry point for one document."""
     adapter = detect_adapter(path, override=override)
     if text is None:
@@ -186,7 +186,7 @@ def load_document(
     return document
 
 
-def finding_for(document: ReportDocument, selector: str = "") -> BugFinding:
+def finding_for(document: ReportModel, selector: str = "") -> BugFinding:
     """Resolve a ``<path>::<selector>`` finding, raising with the real options.
 
     A missing selector on a multi-finding document is a *usage* error, not a

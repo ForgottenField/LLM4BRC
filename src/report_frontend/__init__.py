@@ -54,11 +54,11 @@ from .errors import (
     UnsupportedReportFormat,
 )
 from .frontend import LoadedReport, ReportFrontend, ReportRef, load_report
-from .models import (
+from .report_model import (
     FRONTEND_MODEL_VERSION,
     AnalyzerKind,
     BugFinding,
-    ReportDocument,
+    ReportModel,
     ReportFormat,
     Severity,
     SourceLocation,
@@ -79,7 +79,7 @@ __all__ = [
     "CodeReference",
     "LoadedReport",
     "MissingReportMetadata",
-    "ReportDocument",
+    "ReportModel",
     "ReportFormat",
     "ReportFrontend",
     "ReportFrontendError",
