@@ -347,7 +347,8 @@ Prohibited shortcuts (each fabricates reachability and must NOT be used):
 (c) Do NOT defeat virtual dispatch by defining your own subclass that omits an override so an overridable base method runs. Call sites dispatch on the object's actual dynamic type; if every real subclass overrides the flagged virtual, the base default is unreachable → the report is an FP, not a POC to fabricate.
 (d) Do NOT re-implement or stub the real library function under `namespace {project_name}` (or otherwise) with a made-up internal format/magic. Call the REAL function on a REAL input it can actually parse; do not invent a header/magic the real parser rejects (e.g. a deserializer called on a buffer it cannot read).
 (e) Do NOT hand the bug its own trigger value. This rule is keyed on the PROVENANCE OF THE VALUE, not on which function you call — it applies even when the flagged function IS a public API you are supposed to call. If the bug-triggering value (the null / invalid / garbage / contradictory value the report claims at the flagged statement) comes ONLY from the test case's own literal, local, or declaration — e.g. `bool* out = nullptr; SimpleAtob("0", out);`, or `int32_t nanos; ParseTime("<input no real caller passes>", &seconds, &nanos)` — the test proves nothing: no real caller supplies that value. If the flagged function's own body documents or asserts that parameter (a `CHECK` / `assert` / `ABSL_RAW_CHECK` / `FAISS_THROW_IF_NOT` / `THROW_IF_NOT` on it), then driving it with a fabricated value is a CALLER-CONTRACT VIOLATION, not a bug in the flagged code — the report is a False Positive. Reach the same statement through a real caller's real inputs, or say so (rule 9).
-- A genuine TP POC is one whose triggering null/invalid condition is PRODUCED by real inputs flowing through real callers — not hard-coded as a literal argument or by constructing the exact pathological state directly in the test's own setup. If the only way to reach the flagged statement is a fabricated state/entry that no real caller can produce, the bug is UNREACHABLE in real usage → the report is a False Positive (do not fabricate a POC for it).
+- EXCEPTION TO (e): when the CSA report's own numbered path explicitly initializes the same value (for example `char* p = nullptr;`) and passes it to the reported API, that value has report-path provenance. Reproducing it is not a POC invention, even if the caller is a project test. Preserve the report's call and literal; do not relabel it as test-only merely because no other production call site passes the same value.
+- A genuine TP POC is one whose triggering null/invalid condition is PRODUCED by real inputs flowing through real callers — not hard-coded as a literal argument or by constructing the exact pathological state directly in the test's own setup. A literal explicitly present in the CSA path is report-path evidence; a literal absent from that path and introduced only by the POC is fabricated. If the only way to reach the flagged statement is a POC-only fabricated state/entry, the bug is UNREACHABLE in real usage → the report is a False Positive.
 {oom_rules}"""
 
 POC_GENERATION_PROMPT = """Generate a minimal C++ test that calls the exact buggy function.
@@ -393,7 +394,7 @@ pathological value into your own test's setup.
 6. Only output the code, no explanations
 7. If the bug is in a template/header, include that header and trigger the instantiation through the real public API that instantiates it
 8. Do NOT re-implement/stub the real library function with a made-up internal format, and do NOT subclass to drop a virtual override so a base-class default runs — real dispatch must be preserved
-9. If the flagged statement can ONLY be reached through a fabricated state/entry that no real caller can produce (e.g. passing null to a parameter every real caller passes non-null, or an empty object no caller constructs empty), the report is a False Positive: do NOT fabricate a fake POC. Emit the test file with its FIRST line exactly
+9. If the flagged statement can ONLY be reached through a POC-only fabricated state/entry that is absent from the CSA report path (e.g. the report reaches a real member state but the POC invents null), the report is a False Positive: do NOT fabricate a fake POC. Do not use this escape hatch when the report path itself explicitly initializes and passes the trigger literal. Emit the test file with its FIRST line exactly
    `// POC_UNREACHABLE: <one paragraph naming the parameter and value, which real call sites you checked, and why no real caller can supply it>`
    and below it the closest test you could write. That first line is read back and adjudicated by the execution auditor, so state the blocking fact precisely — do not use it as a way out of a hard-but-real trigger
 
@@ -411,10 +412,12 @@ TEST(/* suite */, /* name */) {{
 
 
 OOM_RULES = """- If the bug trigger involves heap memory allocation failure (e.g., malloc returns NULL inside an opaque function like wslay_queue_push), you MUST include a malloc interposer in the POC to trigger the bug deterministically.
+- For a memory-leak report, do NOT conclude that ownership transfer makes the report unreachable solely because the successful downstream call stores the object. First inspect every failure return of that downstream call (for example a queue push). If the object was allocated successfully and a later allocation-backed call can fail without freeing or transferring it, model that failure with the interposer below.
 - The interposer uses `dlsym(RTLD_NEXT, "malloc")` with a call counter and recursion guard (see OOM Trigger Mechanism section for the exact pattern).
 - Make the failure threshold configurable via a global variable, and loop through possible thresholds to find the triggering one.
 - After the trigger section, ALWAYS restore `g_malloc_fail_after = 0` so subsequent allocations (including gtest infrastructure) work normally.
-- For API initialization functions (e.g., wslay_event_context_server_init), provide a valid (non-null) callbacks struct with no-op stubs — never pass nullptr."""
+- For API initialization functions (e.g., wslay_event_context_server_init), provide a valid (non-null) callbacks struct with no-op stubs — never pass nullptr.
+- The interposer is evidence for STATIC simulation only. It is not compiled or executed by this tool; the auditor reasons about the allocation sequence and failure threshold."""
 
 OOM_TRIGGER_INSTRUCTION = """## OOM / Malloc Failure Trigger Mechanism
 If the bug trigger requires malloc failure (e.g., a memory leak when an internal malloc fails mid-stream), you MUST include a malloc interposer to trigger the bug deterministically.
@@ -1326,6 +1329,9 @@ PATH_MERGE_CHECK_PROMPT = """Check whether the combined execution path (all segm
 ## Global Constraints (project-wide invariants)
 {global_constraints}
 
+## Structured Data Constraints
+{structured_constraints}
+
 ## Selected Path Per Segment
 
 {segment_selections}
@@ -1360,6 +1366,62 @@ If global conflicts found:
   "segment_states": []
 }}
 ```"""
+
+
+GLOBAL_CONSTRAINT_SOLVE_SYSTEM_PROMPT = """You are a C++ constraint solver.
+
+You receive structured report facts, source-derived initialization/assignment
+effects, and source context. Decide whether the report's data constraints are
+jointly satisfiable. Use source semantics only where the supplied facts or
+context support the inference. Do not use or infer from a generated POC.
+
+An UNSAT result is decisive only when at least two supplied IDs support a
+contradiction and at least one of them is an explicit report fact. Missing
+information must be returned as UNKNOWN, never guessed as a contradiction.
+
+Return JSON only."""
+
+
+GLOBAL_CONSTRAINT_SOLVE_PROMPT = """## Bug Information
+- **Type**: {bug_type}
+- **File**: {bug_file}:{bug_line}
+- **Function**: {bug_function}
+
+## Complete Structured Constraint Bundle
+{constraint_bundle}
+
+## Task
+1. Treat every supplied report fact as a claim that must hold together.
+2. Apply the supplied initialization and assignment effects.
+3. Derive intermediate values when their source evidence is supplied.
+4. Return `unsat` only if the supplied facts/effects truly cannot coexist.
+5. If a required semantic link is absent, return `unknown` and name it in
+   `missing_information`.
+6. Never decide from POC code, path enumeration, or unstated assumptions.
+
+Output JSON:
+{{
+  "status": "sat | unsat | unknown",
+  "derived_facts": [
+    {{
+      "subject": "canonical variable/member",
+      "operator": "== | != | < | <= | > | >=",
+      "value": "value",
+      "basis_ids": ["F1", "S2"]
+    }}
+  ],
+  "contradictions": [
+    {{
+      "subject": "canonical variable/member",
+      "values": ["value-a", "value-b"],
+      "basis_ids": ["F1", "S2"],
+      "reason": "why these supplied constraints cannot both hold"
+    }}
+  ],
+  "missing_information": ["specific missing link, if any"],
+  "reason": "concise overall conclusion"
+}}
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -1611,6 +1673,11 @@ COMMON MEMORY-LEAK FALSE POSITIVES (call these FP with evidence, do NOT force a 
 - SELF-CONTRADICTORY CSA PATH: the branch that allocates the object and the branch/state under which
   CSA claims it leaks are mutually exclusive (cannot both hold) → the report is internally
   inconsistent → FP.
+- RESOURCE-EXHAUSTION FAILURE PATH: allocation failure caused by OOM is a valid in-contract
+  execution condition.  It is NOT corrupt, malformed, or out-of-contract input.  A malloc/new
+  interposer in the POC is a legitimate static fault-injection description; this tool does not
+  compile or run it.  If the report's allocation succeeds, a later allocation fails, and the
+  already-owned object is returned without free or owner transfer, that is a real leak → TP.
 A leak is a real TP only if a genuine well-formed caller abandons the object unowned (e.g. a normal
 early return that skips the free with no owner transfer, or a genuinely reachable failure on
 in-contract input).
@@ -1623,11 +1690,19 @@ a decisive verdict, so it MUST be present and non-null — do not omit it):
         "wellformed_continuation_stores_to": "return" | "owner" | null,   // where the object goes on every WELL-FORMED continuation (return value, owning container/field)
         "freed_on_any_path": <bool>,   // is the object freed (delete/RAII/unique_ptr/cleanup helper) on any path before the function exits?
         "abandon_path": "exception_after_alloc" | "manual_no_free_early_return" | null,   // how the object COULD be abandoned, if at all
-        "requires_broken_input": <bool>,   // does that abandon need corrupt/truncated/out-of-contract input to occur?
-        "leak_fires_on_wellformed": <bool>   // AUTHORITATIVE: is the object genuinely abandoned-UNOWNED on a real WELL-FORMED caller path? (only this makes it a real TP leak)
+        "requires_broken_input": <bool>,   // does that abandon need corrupt/truncated/out-of-contract input? OOM is NOT broken input.
+        "leak_fires_on_wellformed": <bool>,   // is the object genuinely abandoned-UNOWNED on a real WELL-FORMED caller path?
+        "allocation_succeeded": <bool>,   // did the report's allocation site complete successfully?
+        "downstream_failure": <bool>,   // did a later resource allocation/call fail on this path?
+        "downstream_failure_operation": "<function/operation that failed, or empty>",
+        "allocated_object_unowned_at_exit": <bool>,   // is the allocated object neither freed nor transferred before exit?
+        "trigger_kind": "resource_exhaustion" | "ordinary_control_flow" | null
     }
 Be conservative on `leak_fires_on_wellformed`: it is true ONLY when a genuine well-formed caller can
-reach the abandon without the object being freed or handed to an owner."""
+reach the abandon without the object being freed or handed to an owner.  For an allocation that
+succeeds followed by an OOM-induced failure, mark `trigger_kind="resource_exhaustion"`,
+`allocation_succeeded=true`, `downstream_failure=true`,
+`allocated_object_unowned_at_exit=true`, and `requires_broken_input=false`."""
 
 
 SIMULATION_PROMPT = """Audit the following test case for correctness, then simulate its execution, verify the CSA report's path step by step, and determine whether the flagged bug is a true positive (TP) or a false positive (FP).
@@ -1661,6 +1736,15 @@ For EACH critical node above, determine whether it actually holds under real exe
 
 For EACH step above, verify by simulation that the POC produces the SAME result the report expects at that step. Judge by the step's kind: an ASSUMPTION step is satisfied when the POC's concrete inputs make the assumption TRUE (no need to re-execute the same function/branch); a BRANCH step is satisfied when the POC takes that outcome (a branch in another function the report merely passes through is fine unless the POC forces the opposite); a CLAIMED-VALUE / KEY-EVENT / REPORT step is satisfied when the POC actually produces that same state. Mark a step UNSATISFIED only when the POC genuinely contradicts it. Any mismatch ⇒ the test case is wrong (`path_conformance_ok=false`). Each step's verdict becomes either silence (satisfied) or its own `path_mismatches` row (unsatisfied) — see Task 3; no prose per step.
 
+## Selected Internal Control Branches (also mandatory)
+{selected_branch_steps}
+
+These controls are part of the exact feasible path selected by the tool. They
+may be inside callees and therefore absent from the CSA report's numbered
+steps. Simulate the POC against each one separately. For a called boolean
+function, derive its return value from the selected body branches; do not
+treat the call-occurrence sentinel as a boolean return value.
+
 ## Concrete Preconditions / Values
 {preconditions}
 
@@ -1681,8 +1765,9 @@ For EACH step above, verify by simulation that the POC produces the SAME result 
    - `steps_checked`: how many numbered steps you walked — MUST equal N, the number of the last step above;
    - `path_mismatches`: one record per UNSATISFIED step — `{{"step": <n>, "poc_result": "<what the POC's execution actually produces there>", "why": "<how that differs from the report's expectation>"}}` — and nothing for the satisfied ones (no empty placeholder records). Every satisfied step is implicit. List at most 10 records: when the POC diverges from the reported path at more steps than that (e.g. it takes a different top-level branch and every downstream step differs), give the 10 that best explain the divergence — the step where the paths first differ, the branch/claimed-value steps around it, and the reported step — and describe the rest as a whole in `reason`. Never pad the list with rows that do not actually differ.
    If `path_mismatches` is empty, every step conforms and `path_conformance_ok=true`; if it is non-empty, set `path_conformance_ok=false` — the POC does not reproduce the reported path (regenerate it), which is NOT by itself an FP. Never write `path_conformance_ok=false` with an empty `path_mismatches`.
-4. Decide the report's true nature: TP (genuinely reachable and triggers) or FP (path impossible, self-contradictory, or the flagged condition is actually safe).
-5. If FP, explain WHY the analyzer (or a prior TP classification) could have mistaken it for TP.
+4. INTERNAL PATH CONFORMANCE: independently check every selected internal control branch above. Set `selected_branches_checked` to the number of rows supplied and report failures in `selected_path_mismatches` as `{{"branch": <n>, "poc_result": "<actual branch/return>", "why": "<expected versus actual>"}}`. An empty mismatch list means every selected internal control was reproduced. A mismatch means the POC is wrong and must be regenerated; it is not by itself an FP.
+5. Decide the report's true nature: TP (genuinely reachable and triggers) or FP (path impossible, self-contradictory, or the flagged condition is actually safe).
+6. If FP, explain WHY the analyzer (or a prior TP classification) could have mistaken it for TP.
 
 ### Definition of `triggered` (read before answering)
 - `triggered` MUST be **true only if the flagged bug actually fires during the simulated execution**: e.g. for a null-dereference, the dereferenced pointer is **actually NULL/invalid at the deref site and the deref crashes**.
@@ -1690,8 +1775,9 @@ For EACH step above, verify by simulation that the POC produces the SAME result 
 - **Reaching the buggy line with a valid/non-null pointer is NOT a trigger.** If the buggy statement executes but the dereference is safe (e.g. `ai_addr` is a concrete non-null object), set `triggered=false`.
 - If the POC does **not** set up the null/invalid condition that the CSA path requires to fire (it passes a valid object where the bug needs a null pointer), the POC **cannot trigger** — say so honestly, `triggered=false`.
 - `triggered` and `fp_likelihood` MUST be mutually consistent: never set `triggered=true` together with `fp_likelihood=definite_fp`. If the flagged condition is actually safe (deref target is concrete non-null, or a real-API success postcondition forbids null), set `triggered=false` and `fp_likelihood=definite_fp`.
-- `bug_value_source` and `triggered` MUST be mutually consistent: when the trigger value's ONLY source is the test case's own literal/local/declaration (`poc_argument`), the "trigger" is manufactured by the test case and is not reachability — do NOT set `triggered=true`; set `triggered=false` and say why no real caller can supply that value. Answer `poc_argument` only when that is really the case (it makes the round conclude FP); if the value CAN arise from a real caller, answer `real_caller` and the trigger stands.
+- `bug_value_source` and `triggered` MUST be mutually consistent. First check whether the SAME triggering literal or initialized value appears in the CSA report's own numbered path and source snippets. If it does, answer `report_path_argument`: the POC is reproducing the report's provenance, even when that caller is a test. Use `poc_argument` only when the trigger value is absent from the reported path and was invented by this POC. A `report_path_argument` can support `triggered=true`; a POC-invented `poc_argument` cannot.
 - `path_conformance_ok` MUST be **false whenever any report step's expected result is not reproduced by the POC's execution**, even if the bug appears to fire. In that case the POC is a test-case defect to be regenerated — do NOT report it as a TP, and do NOT report it as an FP. It MUST also be consistent with the mismatch list: `path_conformance_ok = true` iff `path_mismatches` is empty.
+- `selected_path_conformance_ok` MUST be false whenever a supplied internal control branch is not reproduced. It MUST equal true iff `selected_path_mismatches` is empty and `selected_branches_checked` equals the supplied row count.
 
 Output JSON:
 {{
@@ -1701,10 +1787,14 @@ Output JSON:
   "steps_checked": 92,
   "path_mismatches": [{{"step": 47, "poc_result": "<what the POC's execution produces at that step>", "why": "<how that differs from the report's expectation>"}}],
   "path_conformance_ok": true,
+  "selected_branches_checked": 3,
+  "selected_path_mismatches": [{{"branch": 2, "poc_result": "<actual outcome>", "why": "<selected path expects the opposite>"}}],
+  "selected_path_conformance_ok": true,
   "trace": ["L<line>: <statement> → <variable state>", "..."],
   "reason": "How/why the bug does or does not fire, including which CSA critical node(s) are violated if FP.",
   "csa_contradiction": "If the CSA path is internally self-contradictory, describe the contradiction; otherwise null.",
-  "bug_value_source": "Where the value that triggers the bug (the null/invalid/garbage/contradictory value the report claims at the flagged statement) actually comes from on this test case: 'real_caller' (a real caller's real input produced it), 'api_return' (a real API's return/postcondition), 'member_state' (state a real object acquired through its own API), 'poc_argument' (ONLY the test case's own literal/local/declaration — no real caller could supply it), 'unknown'. Be exact: this field decides the verdict when it conflicts with `triggered`.",
+  "contradiction_basis": "'report_only' only when the contradiction follows solely from the report's own ordered claims and real API semantics; 'poc_path' when it depends on what this POC did, failed to do, or failed to represent; otherwise null.",
+  "bug_value_source": "Where the value/condition that triggers the bug actually comes from: 'report_path_argument' (the same literal/initialized value is present in the CSA report path), 'real_caller' (real caller input not explicit in the report), 'api_return' (a real API return/postcondition), 'member_state' (real object state acquired through its API), 'resource_exhaustion' (a real allocation can fail because memory is exhausted), 'poc_argument' (absent from the report path and invented only by this POC), 'unknown'. Resource exhaustion is not a manufactured POC argument.",
   "fp_likelihood": "definite_fp | likely_fp | uncertain | tp",
   "blocking_reason": "If NOT triggered: the exact condition/precondition/input that prevented reaching or triggering the bug. If triggered, null.",
   "suggested_input_change": "If NOT triggered due to wrong POC setup: a concrete change to inputs/setup that would reach the buggy path. If triggered or unreachable, null."
@@ -1763,6 +1853,88 @@ Only output C++ code.
 Refinement constraints:
 - Do NOT fabricate an unrealistic state to force the trigger. In particular, do NOT hand-construct a struct that real code only receives from a system/dependency API (e.g. an `addrinfo` with `ai_addr=nullptr`) unless you are certain a real caller can produce it. If the only way to reach the flagged statement is through such a fabricated state that real callers cannot produce, the bug is a False Positive — keep the POC as-is rather than fabricate.
 - FIX EVERY path-conformance failure listed above: the refined POC must drive the real public API so that each report step's expected state (branch decision, claimed value, object state) is actually produced by the real code, NOT manufactured by hand (no direct field writes that no real API performs, no stubbed/re-implemented library types, no bypassing the real caller). Removing a manufactured state is the correct fix even if it means the POC no longer crashes.
+"""
+
+
+REPORT_CONTRADICTION_SYSTEM_PROMPT = """You audit one static analyzer execution path for internal consistency.
+
+Use ONLY the numbered CSA report steps and source code in the user message. Do not
+infer a contradiction from a generated test case, a path-selection summary, or a
+constraint-completion summary. A contradiction is report-level only when at least
+two numbered report steps describe states or branch outcomes that cannot both hold
+on the reported execution, without an intervening write or a call that creates a
+new symbol/frame.
+
+Be conservative: uncertainty means `report_contradictory=false`. Return only valid
+JSON with no markdown."""
+
+
+REPORT_CONTRADICTION_PROMPT = """## Bug Information
+- **Type**: {bug_type}
+- **Location**: {bug_file}:{bug_line}
+- **Function**: {bug_function}
+
+## Ordered CSA Report Steps
+{csa_path_steps}
+
+## Source Context
+```cpp
+{source_context}
+```
+
+## Source of Functions Used by the Reported Path
+```cpp
+{callee_sources}
+```
+
+## Source Windows for Reported Events
+```cpp
+{event_sources}
+```
+
+## Macro and Constant Definitions Referenced by Those Events
+```cpp
+{macro_definitions}
+```
+
+## Task
+Decide whether the report's own numbered steps are mutually inconsistent.
+
+Requirements:
+- `report_contradictory` may be true only when `contradiction_events` contains at
+  least two exact step numbers whose claims directly conflict.
+- Do not call a successful operation and its valid success postcondition a conflict.
+- Do not treat a failure path as conflicting with a success path; they are alternatives.
+- OOM/resource exhaustion is a valid failure path, not malformed input.
+- For each control event, evaluate its source expression when every operand is fixed
+  by earlier numbered steps or by the shown helper-source semantics. If that value
+  forces the opposite branch direction, the control event is contradictory.
+- A report's own `Taking true/false branch` statement is the claim being audited,
+  not proof that the branch direction is correct. Substitute earlier reported return
+  values, field values, and operands into the source expression.
+- Evaluate short-circuit expressions operand by operand. For example, if a preceding
+  step says `get_no_buffering()` returned `1`, then `!get_no_buffering()` contributes
+  `false`; if a later operand is true, the `||` expression is true even when the
+  report labels the whole control event false.
+- A multi-line condition must be evaluated as a whole. Do not audit only the first
+  displayed line of an `if`; read its continuation lines from the event-source windows.
+- Protocol/API facts in the shown source are authoritative. For example, WebSocket
+  PING, PONG, and CONNECTION_CLOSE opcodes are control frames when the shown
+  `wslay_is_ctrl_frame` implementation says so.
+- Derived values count as report claims. If earlier numbered steps and the shown
+  definitions force an operand/condition value that makes the report's stated branch
+  direction impossible, report the contradiction even when no single step prints
+  that derived value as a sentence.
+- Explain the conflicting claims in `reason` without relying on any POC.
+- If the report is merely surprising, incomplete, or depends on unknown caller state,
+  return false.
+
+Output JSON:
+{{
+  "report_contradictory": false,
+  "contradiction_events": [],
+  "reason": "why the steps are consistent, or the exact direct contradiction"
+}}
 """
 
 

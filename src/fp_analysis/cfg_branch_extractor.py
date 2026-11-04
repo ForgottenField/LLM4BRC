@@ -527,6 +527,7 @@ class CFGBranchExtractor:
             branch_node = CFGBranchNode(
                 node_id=f"pdg_{fn_name}_{node_id}",
                 source_line=node.source_line,
+                source_file=getattr(pdg, "source_file", "") or "",
                 function_name=fn_name,
                 condition_expr=node.expression,
                 resolved_expr=node.expression,
@@ -780,6 +781,7 @@ class CFGBranchExtractor:
             branch_node = CFGBranchNode(
                 node_id=f"pdg_{callee_name}_{node_id}",
                 source_line=node.source_line,
+                source_file=getattr(callee_pdg, "source_file", "") or "",
                 function_name=callee_name,
                 condition_expr=node.expression,
                 resolved_expr=node.expression,
@@ -895,6 +897,7 @@ class CFGBranchExtractor:
         node = CFGBranchNode(
             node_id=f"seg{self._node_id(fn_name, block_id)}",
             source_line=line_no,
+            source_file=cfg.source_file or "",
             function_name=fn_name,
             condition_expr=cond,
             resolved_expr=resolved_expr,

@@ -276,6 +276,15 @@ class SegmentInfo(BaseModel):
         default=None,
         description="Which branch CSA took: True/False",
     )
+    control_constraints: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "All explicit CSA control events in this segment's event range. "
+            "Each entry retains event_number, line, branch_taken, file, and "
+            "function so call/control events on the same line cannot collapse "
+            "into a single line-only decision."
+        ),
+    )
 
     # Code: source code from function entry to postcondition line
     function_name: str = Field(default="", description="Containing function")

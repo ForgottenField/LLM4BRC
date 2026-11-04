@@ -76,10 +76,14 @@ reported one is a proof over the report's own path.
 
 from __future__ import annotations
 
+import ast
 import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from fp_analysis.condition_extractor import extract_condition_from_lines
+from fp_analysis.models import code_model_of
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +119,8 @@ _KEYWORDS = frozenset({
     "true", "false", "null", "nullptr", "NULL", "new", "delete", "operator",
     "and", "or", "not", "this", "throw", "try", "catch", "using", "typedef",
 })
+
+_MACRO_CACHE: dict[str, dict[str, tuple[list[str] | None, str]]] = {}
 
 
 # ─── Data ─────────────────────────────────────────────────────────────────────
@@ -159,6 +165,212 @@ class ReportContradiction:
             f"该路径不可实现，CSA 无法关联同一条件（判定由 fourcc() 一类跨 TU "
             f"函数/表达式产生，分析器视其为自由符号）"
         )
+
+
+def evaluate_control_direction_conflicts(
+    parsed_report, source_root: str | Path | None = None,
+) -> list[dict]:
+    """Evaluate control events from report-fixed values and source macros.
+
+    This is intentionally conservative: it returns a result only when every
+    identifier in the condition is resolved from a preceding report fact or a
+    source macro.  Such a mismatch is a report-level contradiction because the
+    path claimed a branch direction opposite to its own established values.
+    """
+    events = list(getattr(parsed_report, "path_events", None) or [])
+    if not events:
+        return []
+    model = code_model_of(parsed_report, str(source_root) if source_root else None)
+    macros = _load_macros(str(source_root or ""))
+    returns: dict[str, tuple[int, int]] = {}
+    fields: dict[str, tuple[int, int]] = {}
+    last_call = ""
+
+    for event in events:
+        event_number = int(event.get("path_number") or 0)
+        desc = str(event.get("description") or "")
+        called = _CALLING_RE.search(desc)
+        if called:
+            last_call = called.group(1)
+        returned = re.search(r"Returning the value\s+(-?\d+)", desc)
+        if returned and last_call:
+            returns[last_call] = (int(returned.group(1)), event_number)
+        assumed = re.search(
+            r"Assuming (?:field )?'([^']+)' is equal to\s+([A-Za-z_]\w*|-?\d+)",
+            desc,
+        )
+        if assumed:
+            fields[assumed.group(1)] = (assumed.group(2), event_number)
+
+    conflicts: list[dict] = []
+    bug_file = getattr(getattr(parsed_report, "metadata", None), "bug_file", "")
+    for event in events:
+        expected = event.get("branch_condition")
+        if not isinstance(expected, bool):
+            continue
+        line = int(event.get("line_number") or 0)
+        raw_file = event.get("file_path") or bug_file
+        resolved = model.resolve(str(raw_file)) if raw_file else None
+        local = resolved.local if resolved is not None else None
+        if local is None:
+            continue
+        lines = model.lines(local)
+        extracted = extract_condition_from_lines(lines, line)
+        if extracted.confidence <= 0 or not extracted.expression:
+            continue
+        evaluated, used = _evaluate_condition(
+            extracted.expression, fields, returns, macros,
+        )
+        if evaluated is None or evaluated == expected:
+            continue
+        evidence = [int(event.get("path_number") or 0), *used]
+        evidence = sorted({number for number in evidence if number > 0})
+        if len(evidence) < 2:
+            continue
+        conflicts.append({
+            "event_number": int(event.get("path_number") or 0),
+            "line": line,
+            "reported_branch_taken": expected,
+            "derived_branch_taken": evaluated,
+            "condition": extracted.expression,
+            "supporting_events": evidence,
+        })
+    return conflicts
+
+
+def _load_macros(source_root: str):
+    if not source_root:
+        return {}
+    if source_root in _MACRO_CACHE:
+        return _MACRO_CACHE[source_root]
+    root = Path(source_root)
+    macros: dict[str, tuple[list[str] | None, str]] = {}
+    if root.is_dir():
+        function_re = re.compile(r"^\s*#\s*define\s+(\w+)\(([^)]*)\)\s+(.+?)\s*$")
+        object_re = re.compile(r"^\s*#\s*define\s+(\w+)\s+(.+?)\s*$")
+        enum_re = re.compile(
+            r"^\s*([A-Za-z_]\w*)\s*=\s*(-?(?:0[xX][0-9a-fA-F]+|\d+))[uUlL]*\s*,?\s*$"
+        )
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.suffix not in {
+                ".h", ".hh", ".hpp", ".hxx", ".c", ".cc", ".cpp", ".cxx",
+            }:
+                continue
+            try:
+                lines = path.read_text(
+                    encoding="utf-8", errors="replace",
+                ).splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                match = function_re.match(line)
+                if match:
+                    params = [p.strip() for p in match.group(2).split(",") if p.strip()]
+                    macros.setdefault(match.group(1), (params, match.group(3)))
+                    continue
+                match = object_re.match(line)
+                if match:
+                    macros.setdefault(match.group(1), (None, match.group(2)))
+                    continue
+                match = enum_re.match(line)
+                if match:
+                    macros.setdefault(match.group(1), (None, match.group(2)))
+    _MACRO_CACHE[source_root] = macros
+    return macros
+
+
+def _evaluate_condition(expression, fields, returns, macros):
+    used: set[int] = set()
+    text = expression
+
+    for _ in range(8):
+        changed = False
+        for name, (params, body) in macros.items():
+            if params is None:
+                continue
+            match = re.search(
+                rf"\b{re.escape(name)}\s*\(([^()]*)\)", text,
+            )
+            if not match:
+                continue
+            args = [part.strip() for part in match.group(1).split(",")]
+            if len(args) != len(params):
+                continue
+            expanded = body
+            for param, arg in zip(params, args):
+                expanded = re.sub(rf"\b{re.escape(param)}\b", arg, expanded)
+            text = text[:match.start()] + f"({expanded})" + text[match.end():]
+            changed = True
+        if not changed:
+            break
+
+    for name, (value, event_number) in returns.items():
+        pattern = rf"\b{re.escape(name)}\s*\([^()]*\)"
+        if re.search(pattern, text):
+            text = re.sub(pattern, str(value), text)
+            used.add(event_number)
+
+    for name, (value, event_number) in sorted(
+        fields.items(), key=lambda item: len(item[0]), reverse=True,
+    ):
+        # Match the final member name as well: a report fact for ``opcode``
+        # applies to ``iocb.opcode`` and ``ctx->imsg->opcode``.
+        pattern = (
+            rf"(?<!\w)(?:[A-Za-z_]\w*\s*(?:->|\.)\s*)*"
+            rf"{re.escape(name)}(?!\w)"
+        )
+        if re.search(pattern, text):
+            numeric = _constant_value(value, macros)
+            if numeric is None:
+                continue
+            text = re.sub(pattern, str(numeric), text)
+            used.add(event_number)
+
+    for name, (params, body) in macros.items():
+        if params is not None:
+            continue
+        numeric = _constant_value(body, {})
+        if numeric is not None:
+            text = re.sub(rf"\b{re.escape(name)}\b", str(numeric), text)
+
+    text = re.sub(r"\((?:const\s+)?(?:size_t|int|unsigned|uint\w*_t|ssize_t)\)", "", text)
+    text = re.sub(r"\b(?:true)\b", "True", text)
+    text = re.sub(r"\b(?:false)\b", "False", text)
+    text = re.sub(r"\b(?:NULL|nullptr)\b", "0", text)
+    text = text.replace("&&", " and ").replace("||", " or ")
+    text = re.sub(r"!(?!=)", " not ", text)
+    text = re.sub(r"\b(0[xX][0-9a-fA-F]+|\d+)[uUlL]+\b", r"\1", text)
+    text = text.strip()
+    try:
+        tree = ast.parse(text, mode="eval")
+    except SyntaxError:
+        return None, used
+    allowed = (
+        ast.Expression, ast.BoolOp, ast.UnaryOp, ast.BinOp, ast.Compare,
+        ast.Constant, ast.And, ast.Or, ast.Not, ast.Invert, ast.USub,
+        ast.BitAnd, ast.BitOr, ast.BitXor, ast.LShift, ast.RShift,
+        ast.Add, ast.Sub, ast.Mult, ast.FloorDiv, ast.Mod,
+        ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+    )
+    if any(not isinstance(node, allowed) for node in ast.walk(tree)):
+        return None, used
+    try:
+        return bool(eval(compile(tree, "<report-condition>", "eval"), {"__builtins__": {}})), used
+    except (ArithmeticError, TypeError, ValueError):
+        return None, used
+
+
+def _constant_value(value: str, macros) -> int | None:
+    text = value.strip()
+    for _ in range(4):
+        if text in macros and macros[text][0] is None:
+            text = macros[text][1].strip()
+            continue
+        break
+    try:
+        return int(text.rstrip("uUlL"), 0)
+    except (TypeError, ValueError):
+        return None
 
 
 # ─── Claim extraction ─────────────────────────────────────────────────────────

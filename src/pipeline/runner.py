@@ -40,6 +40,7 @@ from fp_analysis.branch_relevance import (
 from fp_analysis.cfg_cache_set import CFGCacheSet
 from fp_analysis.cfg_feasibility import resolve_source_file_for_cfg
 from fp_analysis.combination_enum import iter_combinations
+from fp_analysis.constraint_model import render_bundle
 from fp_analysis.domain_facts import extract_domain_facts, format_domain_facts
 from fp_analysis.entry_state import detect_fabricated_entry_state
 from fp_analysis.models import code_model_of
@@ -93,8 +94,29 @@ from pipeline.stages import (
 
 logger = get_logger()
 
+_DEFAULT_PATH_ATTEMPT_LIMIT = 10
+_MAX_PATH_ATTEMPTS_HARD_CAP = 10
+
 # Compatibility name used by tests and tools that patch the runner seam.
 _resolve_paths = resolve_paths
+
+
+def _path_exploration_budget(
+    requested_max_attempts: int, reduced_bound: int,
+) -> tuple[int, bool]:
+    """Return the effective attempt count and whether the reduced space is exhausted.
+
+    The configured value is clamped to a hard cap of ten.  A path space is marked
+    exhausted only when every reduced-space combination is within that cap; a
+    ten-attempt sample of a larger space must remain UNKNOWN when all attempts
+    are unresolved or FP.
+    """
+    requested = max(1, int(requested_max_attempts))
+    effective_cap = min(requested, _MAX_PATH_ATTEMPTS_HARD_CAP)
+    normalized_bound = max(1, int(reduced_bound))
+    attempts = min(normalized_bound, effective_cap)
+    exhausted = normalized_bound > 1 and attempts == normalized_bound
+    return attempts, exhausted
 
 def _print_run_banner(args, report_ref, source_root, pdg_path, cfg_cache_path) -> None:
     """The run header: what is being analysed and against which project data.
@@ -385,8 +407,17 @@ def _stage4_assumptions(analyzer, segments, parsed_report, source_root) -> Stage
         print(f"    🔒 {hc}")
     for var, val in cumulative_state.items():
         print(f"    📎 {var}: {val}")
+    constraint_solution = getattr(
+        analyzer, "_global_constraint_solution", None,
+    )
+    if constraint_solution:
+        print(
+            f"    🧮 Global data constraints: {constraint_solution.get('status')} "
+            f"({len(constraint_solution.get('contradictions') or [])} contradiction(s))"
+        )
     return Stage4Assumptions(hard_constraints, cumulative_state,
-                             assumption_elapsed, n_hc, n_state)
+                             assumption_elapsed, n_hc, n_state,
+                             constraint_solution)
 
 
 def _stage5_branch_filter(segments, parsed_report, cfg_cache, sdg, slice_mask,
@@ -420,7 +451,8 @@ def _stage5_branch_filter(segments, parsed_report, cfg_cache, sdg, slice_mask,
 
 
 def _stage6_gate(args, report_ref, segments, parsed_report, source_root, entry_fn,
-                 t0, total_start, lite_graph=None) -> ResultDocument | None:
+                 t0, total_start, lite_graph=None,
+                 constraint_solution=None) -> ResultDocument | None:
     """Stage 6: the two deterministic FP gates, sharing one exit.
 
     Returns the result JSON when a gate fired, ``None`` otherwise.  ``t0`` is
@@ -467,7 +499,12 @@ def _stage6_gate(args, report_ref, segments, parsed_report, source_root, entry_f
     except Exception as e:  # noqa: BLE001 — gate must never be fatal
         logger.warning("Entry-state fabrication gate failed: %s", e)
         entry_finding = None
-    if report_contradictions or entry_finding:
+    constraint_conflicts = []
+    if constraint_solution and constraint_solution.get("status") == "unsat":
+        constraint_conflicts = list(
+            constraint_solution.get("contradictions") or []
+        )
+    if report_contradictions or entry_finding or constraint_conflicts:
         _fp_reasons: list[str] = []
         if report_contradictions:
             _c0 = report_contradictions[0]
@@ -491,6 +528,16 @@ def _stage6_gate(args, report_ref, segments, parsed_report, source_root, entry_f
                   f"却声明 L{entry_finding.deref_line} 处解引用 "
                   f"'{entry_finding.parameter}'")
             _fp_reasons.append(entry_finding.reason())
+        if constraint_conflicts:
+            _c = constraint_conflicts[0]
+            print(f"\n{stage_label(6)}: global data constraints unsatisfiable — "
+                  f"{len(constraint_conflicts)} contradiction(s) "
+                  f"[{time.time()-t0:.1f}s]")
+            print(f"    ✗ {_c.get('reason') or _c.get('subject', '')}")
+            _fp_reasons.append(
+                str(_c.get("reason")
+                    or f"Global data constraints for {_c.get('subject', '')} are unsatisfiable")
+            )
         _fp_reason = " ".join(_fp_reasons)
         print(f"\n{'='*70}")
         print("RESULTS")
@@ -510,6 +557,8 @@ def _stage6_gate(args, report_ref, segments, parsed_report, source_root, entry_f
                 [f"报告自相矛盾判定: {c.reason()}" for c in report_contradictions]
                 + ([f"入口状态不可实现判定: {entry_finding.reason()}"]
                    if entry_finding else [])
+                + [f"全局数据约束求解: {c.get('reason', '')}"
+                   for c in constraint_conflicts]
             ),
             "total_elapsed_sec": round(time.time() - total_start, 1),
         }
@@ -562,13 +611,22 @@ def _stage6_gate(args, report_ref, segments, parsed_report, source_root, entry_f
                 "call_sites_in_project": entry_finding.call_sites,
                 "call_site_samples": list(entry_finding.call_site_samples),
             }
+        if constraint_conflicts:
+            _output["global_constraint_solve"] = {
+                "decisive_fp": True,
+                **constraint_solution,
+            }
         # The verdict step names the detector that fired; when both did, the
         # condition-pair detector keeps the canonical suffix and the entry-state
         # finding is listed in `verdict_steps` alongside it.
         _output["verdict_step"] = (
             stage_step(6, "（同一条件同路径反向）")
             if report_contradictions
-            else stage_step(6, "（入口状态制造：穿过必然终止的检查）")
+            else (
+                stage_step(6, "（入口状态制造：穿过必然终止的检查）")
+                if entry_finding
+                else stage_step(6, "（全局数据约束不可满足）")
+            )
         )
         _output["code_model"] = code_model_report(parsed_report, source_root)
         _output["lite_graph"] = (
@@ -580,7 +638,8 @@ def _stage6_gate(args, report_ref, segments, parsed_report, source_root, entry_f
     return None
 
 
-def _stage7_preamble(cumulative_state) -> list[str]:
+def _stage7_preamble(cumulative_state, constraint_solution=None,
+                     constraint_bundle=None) -> list[str]:
     """Stage 7 preamble: stage 4's state becomes a block of the selection prompt."""
     # ── Stage 7 preamble: inject assumption-derived state as preconditions ──
     # (the stage-4 state becomes part of the selection prompt in stage 9)
@@ -593,6 +652,27 @@ def _stage7_preamble(cumulative_state) -> list[str]:
             f"[Assumption-derived state from Error Start / CSA assumptions]\n"
             f"{state_lines}"
         )
+    if constraint_solution or constraint_bundle is not None:
+        parts = ["[Global structured data constraints]"]
+        if constraint_solution:
+            parts.append(f"Solver status: {constraint_solution.get('status')}")
+            if constraint_solution.get("derived_facts"):
+                parts.append(
+                    "Derived facts: "
+                    + "; ".join(
+                        f"{item.get('subject')} {item.get('operator')} "
+                        f"{item.get('value')}"
+                        for item in constraint_solution["derived_facts"][:20]
+                    )
+                )
+            if constraint_solution.get("missing_information"):
+                parts.append(
+                    "Missing information: "
+                    + "; ".join(constraint_solution["missing_information"][:10])
+                )
+        if constraint_bundle is not None:
+            parts.append(render_bundle(constraint_bundle))
+        extra_preconditions.append("\n".join(parts))
     return extra_preconditions
 
 
@@ -728,7 +808,14 @@ def _stage8_path_space(args, report_ref, analyzer, segments, parsed_report,
     # dependent — (segA=b1, segB=c1) being FP does not make b1 infeasible, since
     # (segA=b1, segB=c2) may be feasible.  So a path's FP blocks that exact
     # combination and the next enumeration step tries a different one.
-    max_path_attempts = getattr(args, "max_path_attempts", 3) or 3
+    requested_max_attempts = (
+        getattr(args, "max_path_attempts", _DEFAULT_PATH_ATTEMPT_LIMIT)
+        or _DEFAULT_PATH_ATTEMPT_LIMIT
+    )
+    max_path_attempts = min(
+        max(1, int(requested_max_attempts)),
+        _MAX_PATH_ATTEMPTS_HARD_CAP,
+    )
     path_space_enum = collect_path_space(analyzer, segments)
 
     # ── Slice-driven branch relevance: fix root-cause-irrelevant branches and
@@ -759,12 +846,10 @@ def _stage8_path_space(args, report_ref, analyzer, segments, parsed_report,
     }
     reduced_bound_one = reduced_ps.get("whole_path_bound", 1) == 1
 
-    # Exploration budget.  When the slice-compressed relevant space is small we
-    # explore the WHOLE space (full-space exploration — the user's intent), not
-    # just ``max_path_attempts``; only a still-huge space falls back to the
-    # max_path_attempts bound.  A decisive FP then generalizes over the whole
-    # enumerated relevant space, not a 3-of-16 sample.
-    _FULL_EXPLORE_THRESHOLD = 32
+    # Exploration budget.  At most ten distinct path attempts are executed.  A
+    # reduced space is exhausted only when it fits inside that hard cap; larger
+    # spaces are sampled, so per-path FP observations remain insufficient for a
+    # report-level FP.
     # (There used to be a `_STRUCTURAL_GP_MAX = 1000` cap here, gating the
     # structural-FP cause-invariance generalization on the reduced bound.  It was
     # a *soundness* cap, not a cost one: `cause_invariant` enumerated the
@@ -775,15 +860,12 @@ def _stage8_path_space(args, report_ref, analyzer, segments, parsed_report,
     # too — that is what makes it possible to conclude FP instead of UNKNOWN
     # there.  Do not reintroduce a bound-based cap without re-checking that.)
     reduced_bound = int(reduced_ps.get("whole_path_bound", 1))
-    if reduced_bound <= _FULL_EXPLORE_THRESHOLD:
-        loop_attempts = max(reduced_bound, 1)
-        full_space_explore = reduced_bound > 1  # bound==1 handled by generalization
-    else:
-        loop_attempts = max_path_attempts
-        full_space_explore = False
+    loop_attempts, full_space_explore = _path_exploration_budget(
+        max_path_attempts, reduced_bound,
+    )
     combo_iter = iter_combinations(
         reduced_ps, segments,
-        cap=max(loop_attempts, max_path_attempts * 8, 16),
+        cap=max(loop_attempts, 16),
     )
     verdict_state.verdict = None
     verdict_state.final_step = None
@@ -793,6 +875,9 @@ def _stage8_path_space(args, report_ref, analyzer, segments, parsed_report,
     explore.poc_result = None
     explore.poc_code = None
     explore.poc_path = None
+    explore.poc_attempts: list[dict] = []
+    explore.path_consistency_violations: list[dict] = []
+    explore.attempts_run = 0
 
     # Exploration state: a decisive FP on ONE path never concludes the report is
     # FP (that path may just be the wrong one).  We collect evidence across the
@@ -847,7 +932,6 @@ def _print_results(ctx, verdict_state, explore) -> dict:
     full_space_explore = ctx.full_space_explore
     slice_relevance = ctx.slice_relevance
     slice_reduce_stats = ctx.slice_reduce_stats
-    blocked_paths = explore.blocked_paths
     fp_observations = explore.fp_observations
     selections = explore.selections
     ps_stats = explore.ps_stats
@@ -886,7 +970,7 @@ def _print_results(ctx, verdict_state, explore) -> dict:
     # efficient path-space-search algorithms can consume the structured data.
     chosen_by_seg = _chosen_by_seg(selections)
     path_space = collect_path_space(analyzer, segments, selections)
-    path_space["attempts_used"] = len(blocked_paths) + 1 if verdict else 0
+    path_space["attempts_used"] = explore.attempts_run
     path_space["max_path_attempts"] = loop_attempts
     path_space["configured_max_path_attempts"] = max_path_attempts
     path_space["full_space_explore"] = full_space_explore
@@ -986,6 +1070,7 @@ def _build_output_dict(
             "hard_constraints": hard_constraints,
             "num_state_bindings": n_state,
             "state_bindings": cumulative_state,
+            "global_constraint_solve": stage4.constraint_solution,
             "elapsed_sec": round(assumption_elapsed, 1),
         },
         "branch_filter": {
@@ -1008,6 +1093,17 @@ def _build_output_dict(
             "generalized_fp": bool(ps_stats.get("generalized_fp", False)),
             "structural_generalized_fp": bool(ps_stats.get("structural_generalized_fp", False)),
             "leak_consensus_fp": bool(ps_stats.get("leak_consensus_fp", False)),
+            "csa_contradiction_fp": bool(ps_stats.get("csa_contradiction_fp", False)),
+            "report_control_contradiction": ps_stats.get(
+                "report_control_contradiction", []
+            ),
+            "path_consistency": {
+                "violation_count": sum(
+                    len(entry.get("violations") or [])
+                    for entry in explore.path_consistency_violations
+                ),
+                "attempts": explore.path_consistency_violations,
+            },
             "leak_layer": {
                 "fp_verdicts": len(leak_fp_reasons),
                 "tp_verdicts": len(leak_tp_reasons),
@@ -1025,6 +1121,7 @@ def _build_output_dict(
         },
         "context_insensitive": ci_stats,
         "total_elapsed_sec": round(time.time() - total_start, 1),
+        "poc_attempts": explore.poc_attempts,
     }
     if poc_result is not None:
         output["poc_verification"] = poc_result
@@ -1177,11 +1274,16 @@ def process_report(args, report_path) -> ResultDocument:
     )
 
     early = _stage6_gate(args, report_ref, segments, stage1.parsed_report,
-                         source_root, entry_fn, t0, total_start, lite_graph)
+                         source_root, entry_fn, t0, total_start, lite_graph,
+                         constraint_solution=stage4.constraint_solution)
     if early is not None:
         return early
 
-    extra_preconditions = _stage7_preamble(stage4.cumulative_state)
+    extra_preconditions = _stage7_preamble(
+        stage4.cumulative_state,
+        constraint_solution=stage4.constraint_solution,
+        constraint_bundle=getattr(analyzer, "_global_constraint_bundle", None),
+    )
     _stage7_supplement(analyzer, segments, stage1.parsed_report, project.sdg,
                        stage3.slice_mask, extra_preconditions, lite_graph)
     early = _stage7_gate(analyzer, stage1.parsed_report, args, report_ref,

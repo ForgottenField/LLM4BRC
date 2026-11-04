@@ -19,7 +19,11 @@ import time
 from pathlib import Path
 
 from fp_analysis.models import CompletedPath
-from fp_analysis.path_analyzer import FPAnalyzer, PathSpaceExhausted
+from fp_analysis.path_analyzer import (
+    FPAnalyzer,
+    PathSelectionUnavailable,
+    PathSpaceExhausted,
+)
 from fp_analysis.prompt_templates import parse_poc_unreachable_note
 from fp_analysis.simulation_verifier import SimulationVerifier
 from fp_analysis.slice_mask import SliceMask
@@ -96,6 +100,7 @@ def run_path_selection(
     logger.info("Conflict-driven path selection with shortest-path candidates ...")
     exhausted = False
     combo_infeasible = False
+    selection_error = ""
     try:
         if combo is not None and path_space is not None:
             # Deterministic whole-path combination: build + conflict-check only.
@@ -126,6 +131,10 @@ def run_path_selection(
         logger.info("Path space exhausted: %s", e)
         exhausted = True
         selections = None
+    except PathSelectionUnavailable as e:
+        logger.warning("Path selection unavailable: %s", e)
+        selection_error = str(e)
+        selections = None
 
     elapsed = time.time() - t0
 
@@ -135,6 +144,7 @@ def run_path_selection(
         "selected": selections is not None,
         "exhausted": exhausted,
         "combo_infeasible": combo_infeasible,
+        "selection_error": selection_error,
     }
 
     if selections:
@@ -143,6 +153,11 @@ def run_path_selection(
         stats["result"] = "Combination globally infeasible (whole-path FP) — not a report-level FP"
     elif exhausted:
         stats["result"] = "Exhausted top-k path space (no NEW distinct path) — not a conflict-based FP"
+    elif selection_error:
+        stats["result"] = (
+            "Path selection unavailable (model response was not usable) — "
+            "not a report-level FP"
+        )
     else:
         stats["result"] = "FP — no globally consistent path"
 
@@ -249,7 +264,7 @@ def _no_path_verdict(path_evidence: str) -> tuple[str, str] | None:
 
 def _verify_path(analyzer, report_path, source_root, out_path, report_stem,
                  selections=None, parsed_report=None, loaded=None,
-                 poc_output_dir=None):
+                 poc_output_dir=None, attempt: int = 1):
     """7a–7e: generate a POC (LLM-only, no real compile), LLM-audit its
     correctness, and LLM-simulate execution with a feedback loop.
 
@@ -266,6 +281,7 @@ def _verify_path(analyzer, report_path, source_root, out_path, report_stem,
     sim_res = None
     poc_code = None
     poc_path = None
+    poc_dir = Path(poc_output_dir) if poc_output_dir else out_path.parent
     final_reason = None
 
     analyzer.ensure_project_name(source_root.name)
@@ -311,9 +327,11 @@ def _verify_path(analyzer, report_path, source_root, out_path, report_stem,
         poc_elapsed = time.time() - t0
 
         poc_result = {
+            "attempt": attempt,
             "compiled": False,
             "compile_attempts": 0,
             "compile_mode": "llm_only",
+            "verification_mode": "llm_static_simulation",
             "elapsed_sec": round(poc_elapsed, 1),
             "poc_code_lines": len(poc_code.splitlines()) if poc_code else 0,
             "compile_log": [],
@@ -322,7 +340,6 @@ def _verify_path(analyzer, report_path, source_root, out_path, report_stem,
         if poc_code:
             print(f"      POC code: {len(poc_code.splitlines())} lines — "
                   f"LLM-generated, correctness audited during simulation")
-            poc_dir = Path(poc_output_dir) if poc_output_dir else out_path.parent
             poc_dir.mkdir(parents=True, exist_ok=True)
             poc_path = poc_dir / f"poc_{report_stem}.cpp"
             poc_path.write_text(poc_code)
@@ -359,10 +376,25 @@ def _verify_path(analyzer, report_path, source_root, out_path, report_stem,
             verified_status = (
                 "VERIFIED" if conclusion == "tp" else "UNVERIFIED"
             )
+
+            # Persist every generated/refined test case before serializing the
+            # round records.  The canonical file is overwritten with the final
+            # round below, so it always matches the code used for the final
+            # static-simulation judgment.
+            for round_data in sim_res.get("rounds") or []:
+                round_code = round_data.get("poc_code") or ""
+                round_num = int(round_data.get("round", 0))
+                round_path = (
+                    poc_dir
+                    / f"poc_{report_stem}_attempt_{attempt}_round_{round_num}.cpp"
+                )
+                round_path.write_text(round_code)
+                round_data["poc_path"] = str(round_path)
             poc_result["simulation"] = {
                 "performed": True,
                 "compiled": False,
                 "compile_mode": "llm_only",
+                "verification_mode": "llm_static_simulation",
                 "triggered": sim_res["triggered"],
                 "conclusion": conclusion,
                 "verified_status": verified_status,
@@ -371,6 +403,9 @@ def _verify_path(analyzer, report_path, source_root, out_path, report_stem,
                 "test_case_correct": sim_res["rounds"][-1]["sim"].test_case_correct,
                 "test_case_issues": sim_res["rounds"][-1]["sim"].test_case_issues,
                 "path_conformance_ok": sim_res["rounds"][-1]["sim"].path_conformance_ok,
+                "selected_path_conformance_ok": sim_res["rounds"][-1][
+                    "sim"
+                ].selected_path_conformance_ok,
                 "parse_degraded": sim_res["rounds"][-1]["sim"].parse_degraded,
                 "rounds": [
                     {
@@ -381,13 +416,27 @@ def _verify_path(analyzer, report_path, source_root, out_path, report_stem,
                         "blocking_reason": r["sim"].blocking_reason,
                         "suggested_input_change": r["sim"].suggested_input_change,
                         "csa_contradiction": r["sim"].csa_contradiction,
+                        "contradiction_basis": r["sim"].contradiction_basis,
+                        "contradiction_events": r["sim"].contradiction_events,
                         "fp_likelihood": r["sim"].fp_likelihood,
                         "test_case_correct": r["sim"].test_case_correct,
                         "test_case_issues": r["sim"].test_case_issues,
                         "path_conformance": r["sim"].path_conformance,
                         "path_conformance_ok": r["sim"].path_conformance_ok,
+                        "selected_path_conformance": (
+                            r["sim"].selected_path_conformance
+                        ),
+                        "selected_path_conformance_ok": (
+                            r["sim"].selected_path_conformance_ok
+                        ),
+                        "selected_path_audit_degraded": (
+                            r["sim"].selected_path_audit_degraded
+                        ),
                         "parse_degraded": r["sim"].parse_degraded,
                         "bug_value_source": r["sim"].bug_value_source,
+                        "bug_value_provenance": r["sim"].bug_value_provenance,
+                        "poc_path": r.get("poc_path"),
+                        "poc_code_lines": len((r.get("poc_code") or "").splitlines()),
                         # the leak verdict's raw evidence (memory-leak reports only), so a
                         # report-level verdict can be audited after the fact
                         "leak_chain": r["sim"].leak_chain,
@@ -400,6 +449,14 @@ def _verify_path(analyzer, report_path, source_root, out_path, report_stem,
                 # auditor's adjudication of it lands in final_reason).
                 "generator_unreachable_note": poc_note or None,
             }
+            rounds = sim_res.get("rounds") or []
+            if rounds:
+                poc_code = rounds[-1].get("poc_code") or poc_code
+                poc_path.write_text(poc_code)
+                poc_result["poc_path"] = str(poc_path)
+                poc_result["poc_code_lines"] = len(poc_code.splitlines())
+            else:
+                poc_result["poc_path"] = str(poc_path) if poc_path else None
             # Step-by-step path conformance (hallucination guard): print, per
             # round, whether the POC reproduced each CSA report path step.
             for r in sim_res["rounds"]:
@@ -463,7 +520,12 @@ def _verify_path(analyzer, report_path, source_root, out_path, report_stem,
 
     except Exception as e:
         logger.error("POC verification failed: %s", e, exc_info=True)
-        poc_result = {"compiled": False, "error": str(e)}
+        poc_result = {
+            "attempt": attempt,
+            "compiled": False,
+            "verification_mode": "llm_static_simulation",
+            "error": str(e),
+        }
         print(f"  ❌ POC verification error: {e}")
         return {
             "poc_result": poc_result,

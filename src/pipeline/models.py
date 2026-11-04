@@ -98,6 +98,7 @@ class Stage4Assumptions:
     elapsed_sec: float
     num_hard_constraints: int
     num_state_bindings: int
+    constraint_solution: object = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +187,9 @@ class ExplorationState:
     poc_result: object = None
     poc_code: object = None
     poc_path: object = None
+    poc_attempts: list = field(default_factory=list)
+    path_consistency_violations: list = field(default_factory=list)
+    attempts_run: int = 0
     combo: object = None
     combo_sig: object = None
 

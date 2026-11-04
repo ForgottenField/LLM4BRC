@@ -133,6 +133,28 @@ def _reply(conform: bool, chain: dict | None = None, triggered: bool = False) ->
     })
 
 
+def test_nonconforming_poc_definite_fp_is_regenerated_not_accepted():
+    raw = json.dumps({
+        "triggered": False,
+        "reason": "the generated POC took the wrong branch",
+        "fp_likelihood": "definite_fp",
+        "csa_contradiction": "the POC contradicts the report",
+        "contradiction_basis": "poc_path",
+        "steps_checked": 2,
+        "path_conformance_ok": False,
+        "path_mismatches": [{
+            "step": 1,
+            "poc_result": "wrong branch",
+            "why": "the report takes the opposite branch",
+        }],
+    })
+
+    out = _verify(raw)
+
+    assert out["conclusion"] == "unresolved"
+    assert out["leak_verdict"] is None
+
+
 def _verify(raw: str, max_rounds: int = 2) -> dict:
     verifier = SimulationVerifier(_StubAnalyzer(raw))
     return verifier.verify_with_feedback(

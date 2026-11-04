@@ -143,10 +143,11 @@ def main():
              "backend.",
     )
     parser.add_argument("--cfg-cache", default=None, help="Path to CFG cache JSON file")
-    parser.add_argument("--max-path-attempts", type=int, default=3,
+    parser.add_argument("--max-path-attempts", type=int, default=10,
                         help="Path-traversal threshold: max candidate paths to explore "
-                             "during POC verification before returning UNKNOWN "
-                             "(default: 3)")
+                             "during POC verification before returning UNKNOWN; "
+                             "values above the hard cap of 10 are clamped "
+                             "(default: 10)")
     parser.add_argument("--path-space", action="store_true",
                         help="Print the full per-segment feasible-path-space ASCII "
                              "tree (collection always runs and is serialized to JSON)")

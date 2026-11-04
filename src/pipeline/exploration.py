@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from fp_analysis.cause_invariance import cause_invariant, extract_deref_pointer
 from fp_analysis.combination_enum import combo_signature
+from fp_analysis.report_consistency import evaluate_control_direction_conflicts
 
 from pipeline.models import (
     ExplorationState,
@@ -38,6 +39,7 @@ from pipeline.models import (
     VerdictState,
 )
 from pipeline.outcomes import Verdict
+from pipeline.path_consistency import selected_path_violations
 from pipeline.selection import (
     _last_round_reason,
     _no_path_verdict,
@@ -106,10 +108,44 @@ def _run_path_attempts(
     poc_result = explore.poc_result
     poc_code = explore.poc_code
     poc_path = explore.poc_path
+    poc_attempts = explore.poc_attempts
     combo = explore.combo
     combo_sig = explore.combo_sig
+    attempts_run = explore.attempts_run
 
-    for attempt in range(1, loop_attempts + 1):
+    control_contradictions = evaluate_control_direction_conflicts(
+        parsed_report, source_root,
+    )
+    if control_contradictions:
+        first = control_contradictions[0]
+        final_step = stage_step(6, "报告控制方向与固定值冲突")
+        final_reason = (
+            f"Event #{first['event_number']} at L{first['line']} claims "
+            f"branch={first['reported_branch_taken']}, but report-fixed values "
+            f"and source definitions derive "
+            f"branch={first['derived_branch_taken']} for "
+            f"`{first['condition']}`. Supporting events: "
+            f"{first['supporting_events']}. The contradiction belongs to the "
+            "reported path itself, so alternative path enumeration cannot "
+            "make it feasible → FP."
+        )
+        verdict_steps.append(
+            stage_step(
+                6,
+                f"报告控制方向冲突 → Event #{first['event_number']} "
+                f"L{first['line']} → FP（不生成 POC，不枚举替代路径）",
+            )
+        )
+        ps_stats["report_control_contradiction"] = control_contradictions
+        verdict = Verdict.FP
+        print(
+            f"\n  ❌ 报告控制方向与固定值冲突：Event #{first['event_number']} "
+            f"L{first['line']} 报告={first['reported_branch_taken']} "
+            f"推导={first['derived_branch_taken']} → FP（不生成 POC）"
+        )
+
+    for attempt in range(1, loop_attempts + 1) if verdict is None else ():
+        attempts_run = attempt
         print(f"\n── Path-selection attempt {attempt}/{loop_attempts} "
               f"(blocked paths: {len(blocked_paths)})"
               + (" — 全空间探索(压缩相关空间小)" if full_space_explore else "")
@@ -160,6 +196,19 @@ def _run_path_attempts(
             )
 
         if selections is None:
+            if ps_stats.get("selection_error"):
+                final_step = stage_label(9)
+                final_reason = (
+                    "路径选择 LLM 未返回可解析结果，无法构造并验证报告路径；"
+                    f"该情况不是报告级 FP → UNKNOWN。依据："
+                    f"{ps_stats['selection_error']}"
+                )
+                verdict_steps.append(
+                    f"{stage_label(9)} attempt {attempt} → 路径选择响应不可用 "
+                    f"→ UNKNOWN（不按 FP 处理）"
+                )
+                verdict = Verdict.UNKNOWN
+                break
             if ps_stats.get("combo_infeasible"):
                 # THIS whole-path combination is globally infeasible → block that
                 # combination and enumerate the next.  NOT a report-level FP: a
@@ -214,6 +263,39 @@ def _run_path_attempts(
             else:
                 print(f"    Seg {seg_idx}: linear (no branch decisions)")
 
+        violations = selected_path_violations(selections, segments)
+        if violations:
+            sig = path_signature(selections)
+            blocked_paths.append(sig)
+            first = violations[0]
+            direction = (
+                "TRUE" if first["reported_branch_taken"] else "FALSE"
+            )
+            selected_direction = (
+                "TRUE" if first["selected_branch_taken"] else "FALSE"
+            )
+            reason = (
+                f"Selected path contradicts CSA control event "
+                f"#{first['event_number']} at L{first['line']}: report={direction}, "
+                f"selection={selected_direction}"
+            )
+            verdict_steps.append(
+                f"{stage_label(9)} attempt {attempt} → 确定性路径一致性检查失败"
+                f"（{reason}），屏蔽该路径并继续探索"
+            )
+            print(
+                f"  attempt {attempt}: ❌ 确定性路径一致性检查失败：{reason} "
+                f"→ 不生成 POC，屏蔽并继续 (blocked={len(blocked_paths)})"
+            )
+            explore.path_consistency_violations.append({
+                "attempt": attempt,
+                "signature": sig,
+                "violations": violations,
+            })
+            if attempt < loop_attempts:
+                continue
+            break
+
         # ── A report that states only a location cannot be certified TP ──
         # Stage 9 just built a feasible path *itself*; whether the report ever
         # described one is the analyzer's own statement, carried in the model
@@ -238,8 +320,11 @@ def _run_path_attempts(
             analyzer, report_ref, source_root, out_path, report_stem,
             selections=selections, parsed_report=parsed_report,
             loaded=loaded, poc_output_dir=getattr(ctx.args, "poc_output_dir", None),
+            attempt=attempt,
         )
         poc_result = vres["poc_result"]
+        if poc_result is not None:
+            poc_attempts.append(poc_result)
         poc_code = vres["poc_code"]
         poc_path = vres["poc_path"]
         concl = vres["conclusion"]
@@ -283,6 +368,26 @@ def _run_path_attempts(
             final_reason = vres["final_reason"] or (
                 (poc_result or {}).get("simulation", {}).get("final_reason", "")
             )
+            contradiction = _report_level_csa_contradiction(vres.get("sim_res"))
+            if contradiction:
+                final_step = stage_step(10, "CSA 报告路径自相矛盾")
+                final_reason = (
+                    "所选路径已通过确定性 CSA 分支一致性检查；随后静态模拟发现"
+                    f"报告自身的路径约束互相矛盾，因此不再枚举替代路径 → FP。"
+                    f"矛盾依据：{contradiction[:500]}"
+                )
+                verdict_steps.append(
+                    stage_step(
+                        10,
+                        "模拟执行静态审计 → 报告级 CSA 路径自相矛盾 → FP"
+                        "（该结论与替代分支组合无关）",
+                    )
+                )
+                ps_stats["csa_contradiction_fp"] = True
+                verdict = Verdict.FP
+                print("  attempt: ❌ 报告级 CSA 路径自相矛盾 → 直接 FP，"
+                      "不再枚举替代路径")
+                break
             if leak_v == "fp":
                 leak_fp_reasons.append(final_reason)
             if reduced_bound_one:
@@ -413,6 +518,21 @@ def _run_path_attempts(
     explore.combo = combo
     explore.combo_sig = combo_sig
     explore.saw_unresolved = saw_unresolved
+    explore.attempts_run = attempts_run
+
+
+def _report_level_csa_contradiction(sim_res) -> str:
+    """Return a CSA contradiction found by the static simulation, if any."""
+    for round_data in reversed((sim_res or {}).get("rounds") or []):
+        sim = round_data.get("sim")
+        contradiction = getattr(sim, "csa_contradiction", None)
+        if (
+            contradiction
+            and getattr(sim, "contradiction_basis", None) == "report_only"
+            and len(set(getattr(sim, "contradiction_events", []) or [])) >= 2
+        ):
+            return str(contradiction).strip()
+    return ""
 
 
 def _aggregate_exploration(
@@ -462,7 +582,7 @@ def _aggregate_exploration(
     #
     # Note: a single-path FP NEVER concludes the verdict.  FP is only provable
     # when the slice-compressed relevant space was exhaustively enumerated
-    # (`full_space_explore`: reduced_bound was small, ≤ _FULL_EXPLORE_THRESHOLD).
+    # (`full_space_explore`: reduced_bound fit inside the ten-attempt hard cap).
     # A BOUNDED exploration of a huge uncompressible space (reduced_bound >
     # threshold) samples only `loop_attempts` combos of an astronomically larger
     # set — every one being FP does not rule out a feasible path in the untried

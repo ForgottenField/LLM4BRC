@@ -84,6 +84,10 @@ class PathBranchDecision:
     branch_taken: bool = True
     condition_expr: str = ""
     source_line: int = 0
+    kind: str = "control"
+    callee_name: str = ""
+    function_name: str = ""
+    source_file: str = ""
 
 
 # ─── CalleePathCache ────────────────────────────────────────────────────────────
@@ -717,6 +721,10 @@ class ShortestPathComputer:
                 branch_taken=direction,
                 condition_expr=node.condition_expr,
                 source_line=node.source_line,
+                kind="call" if node.callee_name else "control",
+                callee_name=node.callee_name or "",
+                function_name=node.function_name,
+                source_file=node.source_file,
             )
             for child_decisions, child_metrics in child_paths:
                 results.append(

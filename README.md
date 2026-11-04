@@ -195,7 +195,7 @@ python3 run_pipeline.py --project faiss --no-lite-graph --pdg pdg_faiss.json
 | `--no-lite-graph` | Require and use the exact PDG backend |
 | `--lite-graph-timeout N` | Isolated Tree-sitter worker timeout (default: 30s) |
 | `--compile-commands <file>` | Override `<source-root>/compile_commands.json` |
-| `--max-path-attempts N` | 路径遍历阈值，超过则 UNKNOWN（默认 3） |
+| `--max-path-attempts N` | Maximum distinct path attempts before UNKNOWN (default and hard cap: 10) |
 | `--path-space` | 打印每段可行路径空间的 ASCII 树 |
 | `--output` | Override the per-run report output directory |
 | `--batch-summary` | Override the aggregate JSON path |

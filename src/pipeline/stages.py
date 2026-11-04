@@ -411,16 +411,54 @@ def _build_postcondition(segment, parsed_report, source_root: Path) -> Postcondi
     """Build a Postcondition from the segment's control event."""
     evt_desc = ""
     evt_line = segment.line_end
-    branch_taken = segment.control_branch_taken if segment.control_branch_taken is not None else True
+    branch_taken = (
+        segment.control_branch_taken
+        if segment.control_branch_taken is not None
+        else True
+    )
+    boundary_event = None
 
-    if segment.control_event_number is not None:
+    constraints = [
+        c for c in (getattr(segment, "control_constraints", None) or [])
+        if int(c.get("line") or 0) == int(segment.line_end)
+        and isinstance(c.get("branch_taken"), bool)
+    ]
+    if constraints:
+        if segment.control_event_number is not None:
+            boundary_event = next(
+                (
+                    c for c in constraints
+                    if c.get("event_number") == segment.control_event_number
+                ),
+                None,
+            )
+        if boundary_event is None:
+            boundary_event = min(
+                constraints,
+                key=lambda c: int(c.get("event_number") or 0),
+            )
+        branch_taken = bool(boundary_event["branch_taken"])
+
+    event_number = (
+        boundary_event.get("event_number")
+        if boundary_event is not None
+        else segment.control_event_number
+    )
+    if event_number is not None:
         for evt in parsed_report.path_events:
-            if evt.get("path_number") == segment.control_event_number:
+            if evt.get("path_number") == event_number:
                 evt_desc = evt.get("description", "")
                 evt_line = evt.get("line_number", segment.line_end)
 
                 # Try to extract concrete condition from source code
-                source_file = evt.get("file_path", "") or parsed_report.metadata.bug_file
+                source_file = (
+                    evt.get("file_path", "")
+                    or getattr(
+                        getattr(parsed_report, "metadata", None),
+                        "bug_file",
+                        "",
+                    )
+                )
                 if source_file:
                     model = code_model_of(parsed_report, str(source_root))
                     hit = model.resolve_strong(source_file)

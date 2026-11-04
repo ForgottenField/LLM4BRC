@@ -54,6 +54,29 @@ def test_leak_tp_genuine_wellformed_abandon():
     assert _verdict({"leak_fires_on_wellformed": True}) == "tp"
 
 
+def test_leak_tp_resource_exhaustion_after_successful_allocation():
+    assert _verdict({
+        "trigger_kind": "resource_exhaustion",
+        "allocation_succeeded": True,
+        "downstream_failure": True,
+        "downstream_failure_operation": "wslay_queue_push",
+        "allocated_object_unowned_at_exit": True,
+        "freed_on_any_path": False,
+        "requires_broken_input": False,
+    }) == "tp"
+
+
+def test_resource_exhaustion_chain_is_not_tp_when_object_was_transferred():
+    assert _verdict({
+        "trigger_kind": "resource_exhaustion",
+        "allocation_succeeded": True,
+        "downstream_failure": True,
+        "allocated_object_unowned_at_exit": True,
+        "wellformed_continuation_stores_to": "owner",
+        "requires_broken_input": False,
+    }) is None
+
+
 def test_leak_undecided_cases_return_none():
     assert _verdict(None) is None
     # abandoned, but NOT via broken input and NOT stored → genuinely ambiguous, undecided.

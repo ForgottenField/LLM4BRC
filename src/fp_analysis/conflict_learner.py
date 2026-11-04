@@ -64,14 +64,24 @@ class ConflictPatternLearner:
             List of ``HierarchicalConflictPattern`` (at least L1-L2 filled).
         """
         # Extract conflicting segments from the merge result
-        conflict_segs = getattr(merge_result, "conflicting_segments", [])
+        if isinstance(merge_result, dict):
+            conflict_segs = list(merge_result.get("conflicting_segments") or [])
+        else:
+            conflict_segs = getattr(merge_result, "conflicting_segments", [])
         if not conflict_segs:
             # Try to infer from conflict details
             conflict_segs = list(segment_selections.keys())
 
-        conflict_details = getattr(merge_result, "conflict_details", "")
+        if isinstance(merge_result, dict):
+            conflict_details = merge_result.get("conflict_details", "")
+        else:
+            conflict_details = getattr(merge_result, "conflict_details", "")
         if not conflict_details:
-            conflict_details = getattr(merge_result, "reason", "")
+            conflict_details = (
+                merge_result.get("reason", "")
+                if isinstance(merge_result, dict)
+                else getattr(merge_result, "reason", "")
+            )
 
         # L1-L2: Deterministic extraction
         patterns = self._extract_l1_l2(

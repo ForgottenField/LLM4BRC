@@ -75,6 +75,10 @@ def build_selections_from_combo(
                 "branch_taken": taken,
                 "condition": d.get("condition_expr", ""),
                 "source_line": line,
+                "kind": d.get("kind", "control"),
+                "callee_name": d.get("callee_name", ""),
+                "function_name": d.get("function_name", ""),
+                "file": d.get("source_file", ""),
             })
         for mi in dim["members"]:
             seg = segments[mi]
@@ -85,6 +89,8 @@ def build_selections_from_combo(
                 "established_state": _state_desc(
                     seg, mi, ps, branch_decisions,
                 ),
+                "function": getattr(seg, "function_name", ""),
+                "file": getattr(seg, "function_file", ""),
                 "selected_candidate": combo[di] + 1,
                 "num_candidates": ps.get("num_feasible_candidates", len(ps["candidates"])),
                 "is_feasible": True,

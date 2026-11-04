@@ -476,6 +476,15 @@ def _find_function_boundaries(
 _ASSUME_FIELD_PATTERN = re.compile(
     r"Assuming\s+(?:field\s+)?'(\w+(?:\.\w+)*)'\s+is\s+(<=|>=|!=|==|[<>])\s+(.+?)(?:\s*[←→]\s*)?$",
 )
+_ASSUME_STATE_PATTERN = re.compile(
+    r"Assuming\s+(?:field\s+)?'(\w+(?:\.\w+)*)'\s+is\s+"
+    r"(true|false|null|non-null)(?:\s*[←→]\s*)?$",
+    re.I,
+)
+_ASSUME_CONDITION_PATTERN = re.compile(
+    r"Assuming\s+the\s+condition\s+is\s+(true|false)",
+    re.I,
+)
 
 # Pattern 2: "Assuming 'X' is equal to <Y>" — Y may be a field ('Y'), a
 # plain identifier, or a literal (e.g. "Assuming 'error' is equal to 0").
@@ -525,6 +534,42 @@ def extract_assumptions_from_events(
         desc = evt.get("description", "")
         line = evt.get("line_number", 0)
         is_es = bool(evt.get("is_error_start", False))
+
+        # Boolean/null state assumptions are equality facts too.  Previously
+        # "Assuming field 'thousandsSeparator' is true" was silently dropped
+        # because the comparison pattern only accepted symbolic operators.
+        m = _ASSUME_STATE_PATTERN.search(desc)
+        if m:
+            value = m.group(2).lower()
+            if value == "non-null":
+                operator, value = "!=", "null"
+            else:
+                operator = "=="
+            facts.append(AssumptionFact(
+                event_number=pn,
+                line_number=line,
+                segment_index=segment_index,
+                variable=m.group(1),
+                operator=operator,
+                value=value,
+                raw_description=desc,
+                is_error_start=is_es,
+            ))
+            continue
+
+        m = _ASSUME_CONDITION_PATTERN.search(desc)
+        if m:
+            facts.append(AssumptionFact(
+                event_number=pn,
+                line_number=line,
+                segment_index=segment_index,
+                variable=f"condition@L{line}",
+                operator="==",
+                value=m.group(1).lower(),
+                raw_description=desc,
+                is_error_start=is_es,
+            ))
+            continue
 
         # Pattern 1: "Assuming field 'X' is <op> Y"
         m = _ASSUME_FIELD_PATTERN.search(desc)
@@ -761,6 +806,44 @@ def segment_path(
         else:
             post_label = f"call={bnode.description[:50]}"
 
+        control_constraints: list[dict] = []
+        seen_control_events: set[int] = set()
+        for n in nodes:
+            if n.node_type is not NodeType.CONTROL:
+                continue
+            in_event_range = start_event_no <= n.event_number <= end_event_no
+            # A call/report boundary and the control it contains often occupy
+            # the same source line but different event numbers (and therefore
+            # different segments).  Attach that same-location control to the
+            # boundary segment as well, so postcondition construction does not
+            # default a call boundary to TRUE and hide the CSA direction.
+            same_boundary_location = (
+                bnode.node_type is not NodeType.CONTROL
+                and n.line_number == end_line
+                and (
+                    not n.function_name
+                    or not current_fn
+                    or n.function_name == current_fn
+                )
+                and (
+                    not n.source_file
+                    or not current_file
+                    or Path(n.source_file).name == Path(current_file).name
+                )
+            )
+            if not (in_event_range or same_boundary_location):
+                continue
+            if n.event_number in seen_control_events:
+                continue
+            seen_control_events.add(n.event_number)
+            control_constraints.append({
+                "event_number": n.event_number,
+                "line": n.line_number,
+                "branch_taken": n.branch_condition,
+                "file": n.source_file,
+                "function": n.function_name,
+            })
+
         segments.append(SegmentInfo(
             segment_index=seg_idx,
             label=f"L{start_line}-L{end_line} ({current_fn}) [{post_label}]",
@@ -768,8 +851,15 @@ def segment_path(
             line_start=start_line,
             line_end=end_line,
             precondition_facts=prefacts,
-            control_event_number=end_event_no,
-            control_branch_taken=bnode.branch_condition,
+            control_event_number=(
+                end_event_no if bnode.node_type is NodeType.CONTROL else None
+            ),
+            control_branch_taken=(
+                bnode.branch_condition
+                if bnode.node_type is NodeType.CONTROL
+                else None
+            ),
+            control_constraints=control_constraints,
             function_name=current_fn,
             function_file=current_file,
             code_from_entry=code,

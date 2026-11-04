@@ -54,6 +54,7 @@ from __future__ import annotations
 import argparse
 import html as html_mod
 import json
+import os
 import re
 import subprocess
 import sys
@@ -83,7 +84,7 @@ from report_frontend import (  # noqa: E402
 #: it produced ``pdg_protobuf.json`` for a whole 21-report evaluation.
 PDG_BUILDER = REPO_ROOT / "src/csa_analysis/pdg/build/pdg_builder"
 PDG_BUILDER_SRC = REPO_ROOT / "src/csa_analysis/pdg/PDGBuilder.cpp"
-CXX = "clang++-14"
+CXX = os.environ.get("CXX", "clang++-14")
 CXX_STD = "-std=c++17"
 
 # The build roots report paths are spelled under (``/home/me/projects/cpp-project/``
@@ -97,6 +98,19 @@ CXX_STD = "-std=c++17"
 #: are the same values registered in ``cfg_parser._CFG_PROJECT_CONFIGS`` — keep the
 #: two in sync (``--check-config`` warns when they drift).
 PROJECT_SPECS: dict[str, dict] = {
+    "faiss": {
+        "root": "~/csa_reports/project/faiss",
+        "include_paths": [
+            ".",
+        ],
+        "include_env": [
+            "FAISS_GTEST_INCLUDE",
+        ],
+        "defines": [
+            "FINTEGER=int",
+        ],
+        "force_includes": [],
+    },
     "folly": {
         # Mirrors cfg_parser._CFG_PROJECT_CONFIGS["folly"] — --check-config
         # compares the two and warns on drift.
@@ -520,6 +534,11 @@ def spec_flags(spec: dict, root: Path) -> list[str]:
         cand = (root / rel) if rel != "." else root
         if cand.exists():
             flags.append(f"-I{cand}")
+    for env_name in spec.get("include_env", []):
+        for entry in os.environ.get(env_name, "").split(os.pathsep):
+            path = Path(entry).expanduser()
+            if entry and path.is_dir():
+                flags.append(f"-I{path.resolve()}")
     flags += [f"-D{d}" for d in spec.get("defines", [])]
     flags += [f"-include{fi}" for fi in spec.get("force_includes", [])]
     return flags
@@ -537,15 +556,33 @@ def validate_tu(path: Path, flags: list[str], timeout: int = 300) -> tuple[bool,
     return False, (first or proc.stderr.splitlines()[-1] if proc.stderr else "unknown")
 
 
-def write_compile_db(tus: list[Path], flags: list[str], out_path: Path) -> int:
-    entries = [
-        {
-            "directory": str(tu.parent),
-            "file": str(tu),
-            "command": " ".join([CXX, *flags, "-c", str(tu), "-o", "/dev/null"]),
-        }
-        for tu in tus
-    ]
+def write_compile_db(
+    tus: list[Path],
+    flags: list[str],
+    out_path: Path,
+    extra_files: list[Path] | None = None,
+) -> int:
+    """Write entries for translation units plus report-referenced source files.
+
+    The Tree-sitter backend preprocesses every local file named by a report,
+    including headers.  A conventional compile database often has only TUs, so
+    explicit header entries use ``-x c++-header`` and are appended here.
+    """
+    files = list(dict.fromkeys([*tus, *(extra_files or [])]))
+    entries = []
+    for path in files:
+        language = ["-x", "c++-header"] if path.suffix in _HEADER_SUFFIXES else []
+        header_context = (
+            ["-DFOLLY_FORMAT_H_"] if path.name == "Format-inl.h" else []
+        )
+        entries.append({
+            "directory": str(path.parent),
+            "file": str(path),
+            "command": " ".join([
+                CXX, *flags, *language, *header_context,
+                "-c", str(path), "-o", "/dev/null",
+            ]),
+        })
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(entries, indent=2))
     return len(entries)
@@ -773,6 +810,12 @@ def main() -> int:
     ap.add_argument("--min-line-match", type=float, default=0.9,
                     help="refuse a seed whose report/checkout lines agree less (default 0.9)")
     ap.add_argument("--no-cfg", action="store_true", help="skip CFG cache preheat")
+    ap.add_argument(
+        "--compile-db-only",
+        action="store_true",
+        help="validate report coverage and write compile_commands.json, but "
+             "skip PDG and CFG builds",
+    )
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--check-config", action="store_true",
                     help="only check PROJECT_SPECS vs cfg_parser._CFG_PROJECT_CONFIGS "
@@ -865,7 +908,7 @@ def _finish(args, spec, root: Path, flags: list[str], tus: list[Path],
                      "gaps": [{"report": g.label, "problems": g.problems}
                               for g in (gaps or [])]}
     log(f"[3] flags: {' '.join(flags)}")
-    if not check_builder(log):
+    if not args.compile_db_only and not check_builder(log):
         log("ERROR: refusing to build with a mismatched builder binary")
         return 6
     for tu in tus:
@@ -874,6 +917,23 @@ def _finish(args, spec, root: Path, flags: list[str], tus: list[Path],
     if not tus:
         log("ERROR: no seed translation units — nothing to build")
         return 3
+
+    compile_db = Path(args.compile_db or f"/tmp/{args.project}_cc/compile_commands.json")
+    report_files = sorted({
+        path
+        for seed in seeds
+        for path in ({seed.local_file} | seed.event_files)
+        if path is not None and path.is_file()
+    })
+    if args.compile_db_only:
+        n = write_compile_db(tus, flags, compile_db, extra_files=report_files)
+        summary["compile_db"] = str(compile_db)
+        summary["compile_db_entries"] = n
+        summary["report_files"] = [str(path) for path in report_files]
+        log(f"[4] compile db: {compile_db} ({n} entries)")
+        log("[compile-db-only] skipping compiler validation, PDG, and CFG builds")
+        print(json.dumps(summary, indent=2))
+        return 0
 
     # syntax gate: the PDG builder only sees TUs that actually parse
     usable: list[Path] = []
@@ -894,7 +954,6 @@ def _finish(args, spec, root: Path, flags: list[str], tus: list[Path],
         print(json.dumps(summary, indent=2))
         return 0
 
-    compile_db = Path(args.compile_db or f"/tmp/{args.project}_cc/compile_commands.json")
     pdg_out = Path(args.output or REPO_ROOT / f"pdg_{args.project}.json")
     n = write_compile_db(usable, flags, compile_db)
     log(f"[5] compile db: {compile_db} ({n} entries)")

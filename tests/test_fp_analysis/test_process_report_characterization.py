@@ -205,6 +205,7 @@ def run(monkeypatch, tmp_path: Path):
         entry_finding=None,
         semantic_reason=None,
         domain_facts=None,
+        constraint_solution=None,
         selections_result=None,
         verdict_result=None,
         path_evidence="trace",
@@ -252,6 +253,12 @@ def run(monkeypatch, tmp_path: Path):
             "num_contradictory": 0, "num_insufficient": 0,
         }], {}))
         monkeypatch.setattr(pipeline_runner, "FPAnalyzer", _FakeAnalyzer)
+        monkeypatch.setattr(
+            _FakeAnalyzer,
+            "_global_constraint_solution",
+            constraint_solution,
+            raising=False,
+        )
         monkeypatch.setattr(pipeline_runner, "detect_report_contradictions",
                             lambda *a, **k: list(contradictions or []))
         monkeypatch.setattr(pipeline_runner, "detect_fabricated_entry_state",
@@ -357,6 +364,26 @@ class TestStage6Exit:
         assert any(s.startswith("报告自相矛盾判定:") for s in steps)
         assert any(s.startswith("入口状态不可实现判定:") for s in steps)
 
+    def test_global_data_constraint_unsat_returns_fp_before_path_space(self, run) -> None:
+        drive, _ = run
+        output = drive(constraint_solution={
+            "status": "unsat",
+            "contradictions": [{
+                "subject": "thousandsSeparator",
+                "values": ["true", "false"],
+                "basis_ids": ["F1", "C2", "S3", "S4"],
+                "reason": "input {:5d} cannot enable the comma-only flag",
+            }],
+            "derived_facts": [],
+            "missing_information": [],
+            "reason": "input {:5d} cannot enable the comma-only flag",
+        })
+
+        assert output["verdict"] == "FP"
+        assert output["verdict_step"] == "Step 6 确定性一致性闸门（全局数据约束不可满足）"
+        assert output["global_constraint_solve"]["decisive_fp"] is True
+        assert "path_space" not in output
+
 
 class TestStage7Exit:
     def test_semantic_gate_suffix_and_shape(self, run) -> None:
@@ -400,23 +427,96 @@ class TestFullRun:
             "slice_relevance", "context_insensitive",
             "total_elapsed_sec", "verification_status", "verification_flipped_to_fp",
             "project", "verdict", "verdict_step", "verdict_reason", "verdict_steps",
-            "path_space", "code_model", "lite_graph",
+            "path_space", "code_model", "lite_graph", "poc_attempts",
         }
         # The five keys the eval tooling reads by name.
         ps = output["path_selection"]
         assert ps["generalized_fp"] is False
         assert ps["structural_generalized_fp"] is False
         assert ps["leak_consensus_fp"] is False
+        assert ps["csa_contradiction_fp"] is False
+        assert ps["report_control_contradiction"] == []
+        assert ps["path_consistency"] == {"violation_count": 0, "attempts": []}
         assert ps["leak_layer"] == {"fp_verdicts": 0, "tp_verdicts": 0, "reasons": []}
         assert ps["fp_exploration"] == {
             "num_distinct_paths_fp": 0, "saw_unresolved": False, "observations": [],
         }
         assert output["verification_status"] == "NONE"
         assert output["verification_flipped_to_fp"] is False
+        assert output["poc_attempts"] == []
         assert output["assumption_check"]["num_hard_constraints"] == 1
         assert output["branch_filter"]["num_segments"] == 1
         assert output["algorithm"] == "conflict-driven"
         assert output["project"] == "report-x" or output["project"]
+
+    def test_selected_path_control_conflict_skips_poc(self, run) -> None:
+        drive, _ = run
+        seg = SegmentInfo(
+            segment_index=0,
+            event_range=(1, 63),
+            line_start=694,
+            line_end=694,
+            function_name="wslay_event_recv",
+            function_file="wslay_event.c",
+            control_constraints=[{
+                "event_number": 63,
+                "line": 694,
+                "branch_taken": False,
+                "function": "wslay_event_recv",
+                "file": "wslay_event.c",
+            }],
+        )
+        output = drive(
+            segments=[seg],
+            selections_result=lambda *a, **k: ([{
+                "segment_index": 0,
+                "branch_decisions": [{
+                    "source_line": 694,
+                    "branch_taken": True,
+                    "node_id": "selected-l694-true",
+                }],
+            }], {"elapsed_sec": 0.0}),
+            verdict_result=lambda *a, **k: pytest.fail(
+                "POC verification must not run after a deterministic path conflict"
+            ),
+        )
+
+        assert output["verdict"] == "UNKNOWN"
+        assert output["poc_attempts"] == []
+        assert output["path_selection"]["path_consistency"]["violation_count"] == 1
+        violation = output["path_selection"]["path_consistency"]["attempts"][0][
+            "violations"
+        ][0]
+        assert violation["event_number"] == 63
+        assert violation["reported_branch_taken"] is False
+        assert violation["selected_branch_taken"] is True
+
+    def test_report_level_csa_contradiction_is_decided_without_retry(self, run) -> None:
+        drive, _ = run
+        sim = SimpleNamespace(
+            csa_contradiction="L694 must be false and true",
+            contradiction_basis="report_only",
+            contradiction_events=[60, 63],
+        )
+        output = drive(
+            selections_result=lambda *a, **k: ([{
+                "segment_index": 0,
+                "branch_decisions": [],
+            }], {"elapsed_sec": 0.0}),
+            verdict_result=lambda *a, **k: {
+                "poc_result": {"simulation": {"rounds": []}},
+                "poc_code": "int main() { return 0; }",
+                "poc_path": None,
+                "conclusion": "fp",
+                "final_reason": "CSA path contradiction",
+                "leak_verdict": None,
+                "sim_res": {"rounds": [{"round": 1, "sim": sim}]},
+            },
+        )
+
+        assert output["verdict"] == "FP"
+        assert output["path_selection"]["csa_contradiction_fp"] is True
+        assert "CSA 报告路径自相矛盾" in output["verdict_step"]
 
     def test_the_pre_enumeration_gates_leave_the_side_channel_empty(self, run) -> None:
         # H4: stage 7 assigns `_domain_facts_text` *after* calling

@@ -30,11 +30,16 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from fp_analysis.models import code_model_of
 from fp_analysis.contracts import SimulationAnalyzer
+from fp_analysis.report_consistency import evaluate_control_direction_conflicts
+from fp_analysis.report_provenance import report_path_literal_trigger
 from fp_analysis.prompt_templates import (
     MEMORY_LEAK_SIMULATION_RULES,
+    REPORT_CONTRADICTION_PROMPT,
+    REPORT_CONTRADICTION_SYSTEM_PROMPT,
     SIMULATION_PROMPT,
     SIMULATION_REFINE_PROMPT,
     SIMULATION_REFINE_SYSTEM_PROMPT,
@@ -100,8 +105,17 @@ def _normalize_leak_chain(raw) -> dict | None:
     abandon = raw.get("abandon_path")
     if isinstance(abandon, str):
         abandon = abandon.strip().lower()
-        if abandon not in ("exception_after_alloc", "manual_no_free_early_return"):
+        if abandon not in (
+            "exception_after_alloc",
+            "manual_no_free_early_return",
+            "downstream_allocation_failure",
+        ):
             abandon = None
+    trigger_kind = raw.get("trigger_kind")
+    if isinstance(trigger_kind, str):
+        trigger_kind = trigger_kind.strip().lower()
+        if trigger_kind not in ("resource_exhaustion", "ordinary_control_flow"):
+            trigger_kind = None
     return {
         "alloc_line": raw.get("alloc_line"),
         "alloc_expr": str(raw.get("alloc_expr") or ""),
@@ -110,6 +124,15 @@ def _normalize_leak_chain(raw) -> dict | None:
         "abandon_path": abandon,
         "requires_broken_input": _chain_bool(raw, "requires_broken_input"),
         "leak_fires_on_wellformed": _chain_bool(raw, "leak_fires_on_wellformed"),
+        "allocation_succeeded": _chain_bool(raw, "allocation_succeeded"),
+        "downstream_failure": _chain_bool(raw, "downstream_failure"),
+        "downstream_failure_operation": str(
+            raw.get("downstream_failure_operation") or ""
+        ),
+        "allocated_object_unowned_at_exit": _chain_bool(
+            raw, "allocated_object_unowned_at_exit"
+        ),
+        "trigger_kind": trigger_kind,
     }
 
 def _expand_sparse_audit(data: dict, steps: list[dict]):
@@ -213,7 +236,56 @@ def _expand_sparse_audit(data: dict, steps: list[dict]):
     return records, not mismatches, False
 
 
+def _expand_selected_path_audit(data: dict, selected_steps: list[dict]):
+    """Validate the sparse audit of the path selector's internal controls."""
+    if not selected_steps:
+        return [], True, False
+    checked = data.get("selected_branches_checked")
+    try:
+        checked_n = int(checked)
+    except (TypeError, ValueError):
+        checked_n = None
+    if "selected_path_mismatches" not in data:
+        return [], False, True
+    raw_mismatches = data.get("selected_path_mismatches") or []
+    if checked_n != len(selected_steps) or not isinstance(raw_mismatches, list):
+        return [], False, True
+    mismatches: dict[int, dict] = {}
+    for item in raw_mismatches:
+        if not isinstance(item, dict):
+            return [], False, True
+        try:
+            index = int(item.get("branch"))
+        except (TypeError, ValueError):
+            return [], False, True
+        if not 1 <= index <= len(selected_steps) or index in mismatches:
+            return [], False, True
+        mismatches[index] = item
+    if not mismatches and data.get("selected_path_conformance_ok") is False:
+        return [], False, True
+    records = []
+    for index, step in enumerate(selected_steps, 1):
+        record = {
+            "branch": index,
+            "segment": step.get("segment"),
+            "function": step.get("function"),
+            "line": step.get("line"),
+            "condition": step.get("condition"),
+            "expected_branch_taken": step.get("branch_taken"),
+            "satisfied": index not in mismatches,
+        }
+        mismatch = mismatches.get(index)
+        if mismatch is not None:
+            record["poc_result"] = str(mismatch.get("poc_result") or "")
+            why = mismatch.get("why") or mismatch.get("note")
+            if why:
+                record["note"] = str(why)
+        records.append(record)
+    return records, not mismatches, False
+
+
 logger = logging.getLogger(__name__)
+_MACRO_CACHE: dict[str, dict[str, str]] = {}
 
 
 @dataclass
@@ -233,6 +305,8 @@ class SimulationResult:
     blocking_reason: str | None = None
     suggested_input_change: str | None = None
     csa_contradiction: str | None = None
+    contradiction_basis: str | None = None
+    contradiction_events: list[int] = field(default_factory=list)
     fp_likelihood: str | None = None
     # Test-case correctness audit (the POC is NOT compiled by a real toolchain;
     # the LLM verifies it before/while simulating).
@@ -252,6 +326,12 @@ class SimulationResult:
     # mismatches` and the result JSON consume.
     path_conformance: list[dict] = field(default_factory=list)
     path_conformance_ok: bool = True
+    # The CSA audit does not cover branches introduced by the selector inside
+    # callees.  This second sparse audit checks the exact internal controls the
+    # selected path claims were taken.
+    selected_path_conformance: list[dict] = field(default_factory=list)
+    selected_path_conformance_ok: bool = True
+    selected_path_audit_degraded: bool = False
     # True when this round's reply could not be parsed as JSON and was salvaged
     # (truncation repair) or read by the regex fallback — or when its sparse
     # step audit was unusable (a `steps_checked` that disagrees with the
@@ -265,7 +345,8 @@ class SimulationResult:
     # getting stuck in a "reachable the allocation but never fires" refine limbo.
     leak_chain: dict | None = None
     # Provenance of the bug-triggering value on THIS test case:
-    # "real_caller" | "api_return" | "member_state" | "poc_argument" | "unknown".
+    # "real_caller" | "report_path_argument" | "api_return" | "member_state"
+    # | "poc_argument" | "unknown".
     # `poc_argument` means the value can only come from the test case's own
     # literal/local/declaration — there is no real caller that supplies it.  A
     # round that says `triggered=true` AND `poc_argument` is self-contradictory
@@ -274,9 +355,15 @@ class SimulationResult:
     # this is the deterministic half of the "POC manufactures the precondition"
     # guard (the other half is the entry-state gate in `entry_state.py`).
     bug_value_source: str | None = None
+    bug_value_provenance: dict | None = None
 
     @classmethod
-    def from_dict(cls, data: dict, steps: list[dict] | None = None) -> "SimulationResult":
+    def from_dict(
+        cls,
+        data: dict,
+        steps: list[dict] | None = None,
+        selected_steps: list[dict] | None = None,
+    ) -> "SimulationResult":
         """*steps*: the numbered CSA path steps the prompt rendered (see
         ``SimulationVerifier._csa_step_rows``) — needed to expand the sparse
         audit and to fill each record's ``report_expectation``."""
@@ -321,6 +408,16 @@ class SimulationResult:
             conform_ok = False
         if degraded:
             conform_ok = False
+        selected_conformance, selected_ok, selected_degraded = (
+            _expand_selected_path_audit(data, selected_steps or [])
+        )
+        contradiction_basis = data.get("contradiction_basis")
+        if isinstance(contradiction_basis, str):
+            contradiction_basis = contradiction_basis.strip().lower()
+            if contradiction_basis not in ("report_only", "poc_path"):
+                contradiction_basis = None
+        else:
+            contradiction_basis = None
         return cls(
             triggered=bool(data.get("triggered", False)),
             reason=str(data.get("reason", "")),
@@ -328,6 +425,13 @@ class SimulationResult:
             blocking_reason=data.get("blocking_reason"),
             suggested_input_change=data.get("suggested_input_change"),
             csa_contradiction=data.get("csa_contradiction"),
+            contradiction_basis=contradiction_basis,
+            contradiction_events=[
+                int(value)
+                for value in (data.get("contradiction_events") or [])
+                if isinstance(value, (int, str))
+                and str(value).strip().isdigit()
+            ],
             fp_likelihood=data.get("fp_likelihood"),
             test_case_correct=bool(data.get("test_case_correct", True)),
             test_case_issues=[
@@ -335,6 +439,9 @@ class SimulationResult:
             ],
             path_conformance=conform,
             path_conformance_ok=conform_ok,
+            selected_path_conformance=selected_conformance,
+            selected_path_conformance_ok=selected_ok,
+            selected_path_audit_degraded=selected_degraded,
             parse_degraded=degraded,
             leak_chain=_normalize_leak_chain(data.get("leak_chain")),
             bug_value_source=(
@@ -469,6 +576,255 @@ class SimulationVerifier:
         return "\n".join(f"{r['step']}. {r['text']}" for r in rows)
 
     @staticmethod
+    def _selected_control_rows(selected_branches) -> list[dict]:
+        """Flatten selected control decisions; call sentinels become context."""
+        rows: list[dict] = []
+        seen: set[tuple] = set()
+        for selection in selected_branches or []:
+            if not isinstance(selection, dict):
+                continue
+            segment = selection.get("segment_index")
+            for decision in selection.get("branch_decisions") or []:
+                if not isinstance(decision, dict):
+                    continue
+                kind = str(decision.get("kind") or "").strip().lower()
+                condition = str(
+                    decision.get(
+                        "condition_expr",
+                        decision.get("condition", ""),
+                    )
+                    or ""
+                )
+                if not kind:
+                    kind = "call" if condition.lstrip().startswith("→") else "control"
+                if kind == "call":
+                    continue
+                line = int(
+                    decision.get("source_line", decision.get("line", 0)) or 0
+                )
+                taken = decision.get("branch_taken")
+                if not isinstance(taken, bool):
+                    branch = str(decision.get("branch") or "").lower()
+                    taken = branch == "true" if branch in ("true", "false") else None
+                function = str(
+                    decision.get("function_name")
+                    or selection.get("function")
+                    or ""
+                )
+                source_file = str(
+                    decision.get("file")
+                    or selection.get("file")
+                    or ""
+                )
+                key = (segment, line, condition, taken, function, source_file)
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append({
+                    "segment": segment,
+                    "line": line,
+                    "condition": condition or "(condition unavailable)",
+                    "branch_taken": taken,
+                    "function": function,
+                    "file": source_file,
+                })
+        return rows
+
+    @staticmethod
+    def _render_selected_control_rows(rows: list[dict]) -> str:
+        if not rows:
+            return "(no additional internal control branches were selected)"
+        rendered = []
+        for index, row in enumerate(rows, 1):
+            direction = (
+                "TRUE" if row["branch_taken"] is True
+                else "FALSE" if row["branch_taken"] is False
+                else "UNKNOWN"
+            )
+            rendered.append(
+                f"{index}. segment {row['segment']}, "
+                f"{row.get('function') or 'unknown function'} L{row['line']}: "
+                f"`{row['condition']}` -> {direction}"
+            )
+        return "\n".join(rendered)
+
+    def _audit_report_contradiction(self, analysis) -> dict:
+        """Audit the report in isolation, without any generated POC state."""
+        parsed = analysis.parsed_report
+        deterministic = evaluate_control_direction_conflicts(
+            parsed, getattr(analysis, "source_root", None),
+        )
+        if deterministic:
+            first = deterministic[0]
+            events = sorted({
+                number
+                for item in deterministic
+                for number in item["supporting_events"]
+            })
+            return {
+                "report_contradictory": True,
+                "contradiction_events": events,
+                "reason": (
+                    f"Report control event at L{first['line']} claims "
+                    f"{first['reported_branch_taken']}, but report-fixed values "
+                    f"and source definitions derive "
+                    f"{first['derived_branch_taken']} from "
+                    f"{first['condition']!r}."
+                ),
+            }
+        try:
+            callee_sources = self._analyzer.extract_callee_sources_for_prompt(
+                parsed,
+            ) or "(none)"
+        except Exception:  # noqa: BLE001 - source context is advisory
+            callee_sources = "(none)"
+        event_sources = self._path_source_windows(doc=analysis)
+        prompt = REPORT_CONTRADICTION_PROMPT.format(
+            bug_type=parsed.metadata.bug_type,
+            bug_file=parsed.metadata.bug_file,
+            bug_line=parsed.metadata.bug_line,
+            bug_function=parsed.metadata.function_name,
+            csa_path_steps=self._csa_path_steps(analysis),
+            source_context=self._source_context(analysis),
+            callee_sources=callee_sources,
+            event_sources=event_sources,
+            macro_definitions=self._referenced_macros(
+                analysis,
+                "\n".join((
+                    event_sources,
+                    callee_sources,
+                    self._csa_path_steps(analysis),
+                )),
+            ),
+        )
+        try:
+            raw = self._analyzer.call_llm(
+                REPORT_CONTRADICTION_SYSTEM_PROMPT,
+                prompt,
+                max_tokens=_SIMULATION_MAX_TOKENS,
+            )
+            data = self._analyzer.parse_json_response(
+                raw, "report_contradiction",
+            )
+        except Exception as exc:  # noqa: BLE001 - audit failure is not FP proof
+            logger.warning("Report contradiction audit failed: %s", exc)
+            return {
+                "report_contradictory": False,
+                "contradiction_events": [],
+                "reason": f"audit unavailable: {exc}",
+            }
+        events = [
+            int(value)
+            for value in (data.get("contradiction_events") or [])
+            if isinstance(value, (int, str))
+            and str(value).strip().isdigit()
+        ]
+        return {
+            "report_contradictory": (
+                bool(data.get("report_contradictory")) and len(set(events)) >= 2
+            ),
+            "contradiction_events": sorted(set(events)),
+            "reason": str(data.get("reason") or "").strip(),
+        }
+
+    @staticmethod
+    def _path_source_windows(doc) -> str:
+        """Render merged source windows around every reported path event."""
+        parsed = doc.parsed_report
+        events = getattr(parsed, "path_events", None) or []
+        model = code_model_of(parsed, doc.source_root)
+        by_file: dict[Path, set[int]] = {}
+        bug_file = getattr(parsed.metadata, "bug_file", "") or ""
+        for event in events:
+            line = int(event.get("line_number") or 0)
+            if line <= 0:
+                continue
+            raw_file = event.get("file_path") or bug_file
+            local = model.resolve(str(raw_file)).local if raw_file else None
+            if local is None and bug_file:
+                local = model.resolve(str(bug_file)).local
+            if local is not None:
+                by_file.setdefault(Path(local), set()).add(line)
+
+        blocks: list[str] = []
+        remaining = 240
+        for path, lines in sorted(by_file.items(), key=lambda item: str(item[0])):
+            source = model.lines(path)
+            if not source:
+                continue
+            ranges: list[list[int]] = []
+            for line in sorted(lines):
+                lo = max(1, line - 3)
+                hi = min(len(source), line + 5)
+                if ranges and lo <= ranges[-1][1] + 1:
+                    ranges[-1][1] = max(ranges[-1][1], hi)
+                else:
+                    ranges.append([lo, hi])
+            rendered = [f"--- {path} ---"]
+            for lo, hi in ranges:
+                if remaining <= 0:
+                    break
+                take = min(hi - lo + 1, remaining)
+                rendered.extend(
+                    f"{number:>6}: {source[number - 1]}"
+                    for number in range(lo, lo + take)
+                )
+                remaining -= take
+            blocks.append("\n".join(rendered))
+            if remaining <= 0:
+                break
+        return "\n\n".join(blocks) or "(source windows unavailable)"
+
+    @staticmethod
+    def _referenced_macros(doc, context: str) -> str:
+        """Return source definitions for referenced function-like/object macros."""
+        root_text = str(getattr(doc, "source_root", "") or "")
+        if not root_text:
+            return "(source root unavailable)"
+        root = Path(root_text)
+        if not root.is_dir():
+            return "(source root unavailable)"
+        definitions = _MACRO_CACHE.get(root_text)
+        if definitions is None:
+            definitions = {}
+            define_re = re.compile(
+                r"^\s*#\s*define\s+([A-Za-z_]\w*)"
+                r"(?:\([^)]*\))?\s+(.+?)\s*$"
+            )
+            for path in root.rglob("*"):
+                if not path.is_file() or path.suffix not in {
+                    ".h", ".hh", ".hpp", ".hxx", ".c", ".cc", ".cpp", ".cxx",
+                }:
+                    continue
+                try:
+                    lines = path.read_text(
+                        encoding="utf-8", errors="replace",
+                    ).splitlines()
+                except OSError:
+                    continue
+                for line in lines:
+                    match = define_re.match(line)
+                    if match:
+                        definitions.setdefault(
+                            match.group(1),
+                            f"#define {match.group(1)} {match.group(2)}",
+                        )
+            _MACRO_CACHE[root_text] = definitions
+
+        referenced = {
+            match.group(1)
+            for match in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", context)
+        }
+        referenced.update(
+            match.group(0)
+            for match in re.finditer(r"\b[A-Z][A-Z0-9_]{2,}\b", context)
+        )
+        selected = sorted(
+            text for name, text in definitions.items() if name in referenced
+        )
+        return "\n".join(selected) or "(none referenced)"
+
+    @staticmethod
     def _format_conformance_mismatches(sim: "SimulationResult") -> str:
         """Render the steps where the POC's execution did NOT reproduce the
         report's expected result, for feedback into the refinement prompt."""
@@ -496,6 +852,40 @@ class SimulationVerifier:
                 + (f" | note: {c.get('note')}" if c.get("note") else "")
             )
         return "\n".join(out)
+
+    @staticmethod
+    def _format_selected_path_mismatches(sim: "SimulationResult") -> str:
+        rows = [
+            item for item in (getattr(sim, "selected_path_conformance", None) or [])
+            if not bool(item.get("satisfied", True))
+        ]
+        if not rows:
+            if getattr(sim, "selected_path_audit_degraded", False):
+                return (
+                    "(selected internal-branch audit unavailable or incomplete; "
+                    "re-emit `selected_branches_checked`, "
+                    "`selected_path_mismatches`, and "
+                    "`selected_path_conformance_ok`)"
+                )
+            return "(none reported)"
+        return "\n".join(
+            f"- branch {item.get('branch', '?')}: segment "
+            f"{item.get('segment', '?')} L{item.get('line', '?')} "
+            f"`{item.get('condition', '?')}` expects branch "
+            f"{item.get('expected_branch_taken')} | POC produces -> "
+            f"{item.get('poc_result', '?')}"
+            + (f" | note: {item.get('note')}" if item.get("note") else "")
+            for item in rows
+        )
+
+    @classmethod
+    def _format_all_conformance_mismatches(cls, sim: "SimulationResult") -> str:
+        return (
+            "CSA report path:\n"
+            + cls._format_conformance_mismatches(sim)
+            + "\nSelected internal controls:\n"
+            + cls._format_selected_path_mismatches(sim)
+        )
 
     def _preconditions_str(self, completed) -> str:
         if completed is None:
@@ -534,6 +924,8 @@ class SimulationVerifier:
             if step_rows
             else "(no ordered CSA path events available in the report)"
         )
+        selected_steps = self._selected_control_rows(selected_branches)
+        selected_branch_steps = self._render_selected_control_rows(selected_steps)
         user_prompt = SIMULATION_PROMPT.format(
             bug_type=info["bug_type"],
             bug_file=info["bug_file"],
@@ -542,6 +934,7 @@ class SimulationVerifier:
             completed_path_summary=self._preconditions_str(completed),
             preconditions=self._preconditions_str(completed),
             csa_path_steps=csa_path_steps,
+            selected_branch_steps=selected_branch_steps,
             poc_code=poc_code,
             source_context=self._source_context(analysis),
         )
@@ -640,7 +1033,7 @@ class SimulationVerifier:
         parse_degraded = False
         try:
             data = self._analyzer.parse_json_response(raw, "simulated execution")
-            result = SimulationResult.from_dict(data, step_rows)
+            result = SimulationResult.from_dict(data, step_rows, selected_steps)
         except Exception as strict_err:  # noqa: BLE001 — try the repairing parse next
             try:
                 # A reply cut off at the token limit is a *truncated* document,
@@ -650,7 +1043,7 @@ class SimulationVerifier:
                 data = self._analyzer.parse_json_response_tolerant(
                     raw, "simulated execution"
                 )
-                result = SimulationResult.from_dict(data, step_rows)
+                result = SimulationResult.from_dict(data, step_rows, selected_steps)
                 parse_degraded = True
                 logger.warning(
                     "Simulation: strict JSON parse failed (%s) — salvaged a "
@@ -676,6 +1069,8 @@ class SimulationVerifier:
         if parse_degraded or result.parse_degraded:
             result.parse_degraded = True
             result.path_conformance_ok = False
+        if result.selected_path_audit_degraded:
+            result.selected_path_conformance_ok = False
         logger.info(
             "Simulation: triggered=%s | fp_likelihood=%s | path_conformance_ok=%s "
             "| parse_degraded=%s | reason=%s",
@@ -705,6 +1100,16 @@ class SimulationVerifier:
             logger.info(
                 "Simulation: CSA path contradiction → %s",
                 result.csa_contradiction[:240],
+            )
+        if selected_steps:
+            selected_bad = sum(
+                1 for item in result.selected_path_conformance
+                if not item.get("satisfied", True)
+            )
+            logger.info(
+                "Simulation: selected internal controls — %d/%d matched.",
+                len(result.selected_path_conformance) - selected_bad,
+                len(result.selected_path_conformance),
             )
         return result
 
@@ -883,6 +1288,27 @@ class SimulationVerifier:
         lc = getattr(sim, "leak_chain", None)
         if not lc:
             return None
+        if (
+            lc.get("allocated_object_unowned_at_exit")
+            and lc.get("wellformed_continuation_stores_to") in ("return", "owner")
+        ):
+            logger.warning(
+                "Simulation: leak_chain self-contradictory — object is marked "
+                "unowned at exit but also stored to an owner; not decisive. chain=%s",
+                lc,
+            )
+            return None
+        resource_exhaustion_tp = (
+            lc.get("trigger_kind") == "resource_exhaustion"
+            and lc.get("allocation_succeeded") is True
+            and lc.get("downstream_failure") is True
+            and lc.get("allocated_object_unowned_at_exit") is True
+            and not lc.get("freed_on_any_path")
+            and lc.get("wellformed_continuation_stores_to") not in ("return", "owner")
+            and not lc.get("requires_broken_input")
+        )
+        if resource_exhaustion_tp:
+            return "tp"
         if lc.get("leak_fires_on_wellformed"):
             if lc.get("requires_broken_input"):
                 logger.warning(
@@ -915,7 +1341,14 @@ class SimulationVerifier:
         """Build a human reason string from a decisive leak_chain + the LLM's own reason."""
         alloc = lc.get("alloc_expr") or f"line {lc.get('alloc_line')}"
         sim_reason = (sim.reason or "").strip()
-        if lc.get("leak_fires_on_wellformed"):
+        if lc.get("trigger_kind") == "resource_exhaustion":
+            failure = lc.get("downstream_failure_operation") or "downstream allocation"
+            head = (
+                f"Memory-leak 判 TP：对象 {alloc} 的报告分配点成功，随后 {failure} "
+                "因资源耗尽失败；失败早退前对象既未释放也未移交 owner → "
+                "真实可达的失败路径泄漏"
+            )
+        elif lc.get("leak_fires_on_wellformed"):
             head = (
                 f"Memory-leak 判 TP：对象 {alloc} 在 well-formed 的真实调用路径上被 abandon"
                 "且无人接管（既未释放、也未移交 owner/return）→ 真实可达的泄漏"
@@ -952,17 +1385,15 @@ class SimulationVerifier:
         Each round simulates the current POC.  The loop stops at the first
         *decisive* judgment:
 
-        - the round *concludes* the report is an **FP** (``definite_fp`` or a
-          CSA-path internal contradiction) → stop immediately and return the FP
-          reason (conclusion=fp).  We do NOT refine a definite-FP result —
-          refining would only give the LLM another chance to rationalise a TP
-          out of a genuinely-impossible path.
+        - a report-only CSA contradiction is independently audited first; when
+          confirmed, stop immediately with FP;
         - **PATH-CONFORMANCE GATE**: the POC must reproduce the CSA report's
           ordered path steps.  If ``path_conformance_ok`` is false — the POC
           reaches its state through a path the report does not describe (e.g. a
           manufactured field value) — the test case is WRONG: it is NOT accepted
           as a TP (even when ``triggered`` is true), and it is NOT an FP either.
           The mismatched steps are fed back and the POC is regenerated.
+        - after conformance, ``definite_fp`` is decisive and stops refinement;
         - the memory-leak decisive verdict (``leak_verdict``) is judged AFTER
           the conformance gate, for the same reason: it is the one decisive
           layer that can conclude FP without exhausting the path space, so a
@@ -1003,28 +1434,33 @@ class SimulationVerifier:
             )
             rounds.append({"round": rnd, "sim": sim, "poc_code": code})
 
-            # A definite-FP conclusion (or a CSA-path internal contradiction) is
-            # decisive and is checked BEFORE any trigger: a round that reports
-            # ``triggered=true`` alongside ``fp_likelihood=definite_fp`` or a
-            # ``csa_contradiction`` is self-contradictory (no single test case can
-            # both fire the bug and prove the bug unreachable), so the trigger
-            # cannot be trusted.  This also deterministically catches the
-            # "reached the buggy line but the dereference was safe" failure mode
-            # (the LLM marks ``triggered`` while its own reason says the deref
-            # operated on a valid/non-null pointer) — overriding such a trigger to
-            # FP regardless of the ``triggered`` bit.
-            if self._is_fp_conclusion(sim):
-                reason = sim.reason or sim.blocking_reason or \
-                    "模拟执行判定报告为 FP（测试用例无法触发 bug）"
+            # A contradiction explicitly attributed to the CSA report itself is
+            # independent of the POC and may stop before the conformance gate.
+            # A contradiction attributed to POC execution must not: a malformed
+            # test case routinely produces false "report contradictions".
+            if sim.csa_contradiction and sim.contradiction_basis == "report_only":
+                audit = self._audit_report_contradiction(analysis)
+                if audit["report_contradictory"]:
+                    reason = audit["reason"] or sim.reason or sim.blocking_reason
+                    sim.csa_contradiction = reason
+                    sim.contradiction_events = audit["contradiction_events"]
+                    logger.info(
+                        "Simulation round %d: independently verified report-only "
+                        "CSA contradiction at steps %s → stopping.",
+                        rnd, sim.contradiction_events,
+                    )
+                    return {
+                        "triggered": False, "conclusion": "fp",
+                        "rounds": rounds, "final_reason": reason,
+                        "leak_verdict": None,
+                    }
                 logger.info(
-                    "Simulation round %d: definite FP (triggered=%s overridden) "
-                    "→ stopping (no refine).", rnd, sim.triggered,
+                    "Simulation round %d: report-only contradiction claim was "
+                    "not confirmed by the report-only audit → continuing.",
+                    rnd,
                 )
-                return {
-                    "triggered": False, "conclusion": "fp",
-                    "rounds": rounds, "final_reason": reason,
-                    "leak_verdict": None,
-                }
+                sim.csa_contradiction = None
+                sim.contradiction_basis = None
 
             # ── Path-conformance gate (hallucination guard) ──────────────────
             # The POC must reproduce the CSA report's path step by step.  When
@@ -1076,13 +1512,55 @@ class SimulationVerifier:
                     code = self.refine_poc(
                         code, sim, completed, analysis,
                         selected_branches=selected_branches,
-                        path_conformance=self._format_conformance_mismatches(sim),
+                        path_conformance=(
+                            self._format_all_conformance_mismatches(sim)
+                        ),
                     )
                     code = self._compile_fix(code)
                     continue
                 # Final round still non-conforming: do not accept TP — unresolved.
                 final_reason_override = conformance_reason
                 break
+
+            if not getattr(sim, "selected_path_conformance_ok", True):
+                selected_reason = (
+                    "The POC does not reproduce the selected internal feasible "
+                    "path. The following internal branch decisions disagree "
+                    "with the selector and require POC regeneration:\n"
+                    + self._format_selected_path_mismatches(sim)
+                )
+                logger.warning(
+                    "Simulation round %d: POC does not reproduce the selected "
+                    "internal path (triggered=%s); regenerating.\n%s",
+                    rnd, sim.triggered,
+                    self._format_selected_path_mismatches(sim),
+                )
+                if rnd < max_rounds:
+                    code = self.refine_poc(
+                        code, sim, completed, analysis,
+                        selected_branches=selected_branches,
+                        path_conformance=selected_reason,
+                    )
+                    code = self._compile_fix(code)
+                    continue
+                final_reason_override = selected_reason
+                break
+
+            # A definite-FP conclusion is decisive only after the POC reproduced
+            # the reported path.  Otherwise the "unreachable" claim may describe
+            # the generated test rather than the report.
+            if self._is_fp_conclusion(sim):
+                reason = sim.reason or sim.blocking_reason or \
+                    "模拟执行判定报告为 FP（测试用例无法触发 bug）"
+                logger.info(
+                    "Simulation round %d: definite FP (triggered=%s overridden) "
+                    "→ stopping (no refine).", rnd, sim.triggered,
+                )
+                return {
+                    "triggered": False, "conclusion": "fp",
+                    "rounds": rounds, "final_reason": reason,
+                    "leak_verdict": None,
+                }
 
             # ── Memory-leak decisive verdict (AFTER the conformance gate) ────
             # The LLM's leak_chain settles a leak round the generic (crash-centric)
@@ -1124,31 +1602,48 @@ class SimulationVerifier:
                     }
 
             if sim.triggered and self._is_manufactured_trigger(sim):
-                # The round says the bug fires AND that the only source of the
-                # triggering value is the test case's own literal/local — no
-                # real caller supplies it.  Both cannot be true: the "trigger"
-                # is an artifact of the test's setup, not reachability, which is
-                # exactly the "POC manufactures the precondition" defect (a POC
-                # passing `nullptr` itself, or an input no real caller passes).
-                # Overriding the trigger (never the other way round) mirrors the
-                # `definite_fp` precedence rule.
-                reason = (
-                    "POC 自造触发前提：模拟结果既报 triggered=true，又承认触发值"
-                    "只能来自测试用例自身的字面量/局部变量（bug_value_source="
-                    "poc_argument），没有任何真实调用方会传入该值 —— 触发是测试"
-                    "搭建的产物，不是真实可达性，故判 FP。"
-                    + (f"模拟依据：{sim.reason[:300]}" if sim.reason else "")
+                parsed = analysis.parsed_report
+                provenance = report_path_literal_trigger(
+                    parsed,
+                    getattr(analysis, "source_root", None),
                 )
-                logger.info(
-                    "Simulation round %d: triggered=true with "
-                    "bug_value_source=poc_argument (the POC supplies the trigger "
-                    "value itself) → overriding TP to FP.", rnd,
-                )
-                return {
-                    "triggered": False, "conclusion": "fp",
-                    "rounds": rounds, "final_reason": reason,
-                    "leak_verdict": None,
-                }
+                if provenance is not None:
+                    sim.bug_value_source = "report_path_argument"
+                    sim.bug_value_provenance = provenance
+                    logger.info(
+                        "Simulation round %d: trigger literal is present in the "
+                        "CSA path at event(s) %s; reclassifying POC argument as "
+                        "report_path_argument.",
+                        rnd,
+                        [
+                            item["event_number"]
+                            for item in provenance["initialization_events"]
+                        ],
+                    )
+                else:
+                    # The round says the bug fires AND that the only source of the
+                    # triggering value is the test case's own literal/local — no
+                    # report path supplies it.  The trigger is an artifact of the
+                    # POC's setup, not report reachability.
+                    reason = (
+                        "Manufactured POC trigger: the round reports "
+                        "triggered=true with bug_value_source=poc_argument, "
+                        "while the same trigger value is absent from the CSA "
+                        "report path. The trigger comes only from the POC setup, "
+                        "so it is not report reachability and the result is FP."
+                        + (f" Simulation evidence: {sim.reason[:300]}"
+                           if sim.reason else "")
+                    )
+                    logger.info(
+                        "Simulation round %d: triggered=true with "
+                        "bug_value_source=poc_argument and no report-path "
+                        "provenance → overriding TP to FP.", rnd,
+                    )
+                    return {
+                        "triggered": False, "conclusion": "fp",
+                        "rounds": rounds, "final_reason": reason,
+                        "leak_verdict": None,
+                    }
 
             if sim.triggered:
                 # Deterministic fabrication guard: a "trigger" that comes from a

@@ -179,6 +179,10 @@ def collect_path_space(analyzer, segments, selections=None) -> dict:
                     "branch_taken": getattr(d, "branch_taken", True),
                     "condition_expr": getattr(d, "condition_expr", ""),
                     "source_line": getattr(d, "source_line", 0),
+                    "kind": getattr(d, "kind", "control"),
+                    "callee_name": getattr(d, "callee_name", ""),
+                    "function_name": getattr(d, "function_name", ""),
+                    "source_file": getattr(d, "source_file", ""),
                 }
                 for d in decisions
             ]

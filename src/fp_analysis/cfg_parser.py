@@ -101,7 +101,6 @@ _CFG_PROJECT_CONFIGS: dict[str, dict] = {
     "faiss": {
         "include_paths": [
             ".",
-            "/usr/lib/gcc/x86_64-linux-gnu/10/include",
         ],
         "defines": [
             "FINTEGER=int",

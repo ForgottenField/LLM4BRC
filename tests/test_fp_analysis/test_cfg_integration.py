@@ -179,6 +179,32 @@ class TestBuildPostcondition:
         pc = self._build_postcondition(seg, mock_parsed)
         assert pc.branch_taken is False
 
+    def test_call_boundary_uses_same_line_control_constraint(self, mock_parsed, tmp_path):
+        from pipeline.stages import _build_postcondition
+
+        seg = SegmentInfo(
+            segment_index=1,
+            event_range=(2, 2),
+            line_start=15,
+            line_end=20,
+            function_name="test_func",
+            control_event_number=None,
+            control_branch_taken=None,
+            control_constraints=[{
+                "event_number": 3,
+                "line": 20,
+                "branch_taken": False,
+                "function": "test_func",
+                "file": "",
+            }],
+        )
+
+        pc = _build_postcondition(seg, mock_parsed, tmp_path)
+
+        assert pc.source_line == 20
+        assert pc.branch_taken is False
+        assert pc.condition_expr == "Taking false branch"
+
     @staticmethod
     def _build_postcondition(segment, parsed) -> Postcondition:
         """Same logic as FPAnalyzer._build_postcondition will have."""

@@ -383,8 +383,12 @@ leak `484-2`（FP）保持不翻转来验证。
 > **bound 只反映压缩后的相关空间**，且受每段候选 **cap（`_MAX_CANDIDATES`）** 截断——
 > **跨运行比较 bound 前必须先固定 cap**，否则比的是两个截断位置。
 
-**探索预算**：`reduced_bound ≤ _FULL_EXPLORE_THRESHOLD (32)` ⇒ **全空间探索**（尝试次数 = bound）；
-否则退回到 `max_path_attempts` 的有界采样。这个区分决定了阶段 9 能否下 FP 结论（见下）。
+**Exploration budget**: the effective attempt count is
+`min(requested_max_path_attempts, reduced_bound, 10)`.  Ten attempts is a hard
+cap, and a reduced space is considered exhausted only when `reduced_bound` fits
+inside that cap.  Otherwise the run is a bounded sample and cannot aggregate
+all-FP observations into a report-level FP.  This distinction determines
+whether stage 9 may conclude FP.
 
 ---
 
@@ -396,6 +400,12 @@ leak `484-2`（FP）保持不翻转来验证。
 
 **为什么屏蔽的是"整路径组合"**：阶段 10 对一条路径判 FP 只说明**那条**路径不可行，
 不能证明报告是 FP——其它组合可能真的能到达 bug。
+
+**Cross-procedure return constraint**: a call sentinel records that a call
+occurs; it is not itself a boolean branch.  For a caller condition such as
+`!callee()`, the selector derives the required callee return value and compares
+it with the return path implied by the callee's selected branches.  A mismatch
+makes the whole combination infeasible before POC generation.
 
 阶段 9 的出口（按优先级）：
 
@@ -417,7 +427,7 @@ leak `484-2`（FP）保持不翻转来验证。
 |---|---|
 | leak 层跨路径**一致**判 FP（≥2 个见证，且无 TP 见证） | **leak 层一致性推广 → FP** |
 | 全空间探索 + 全部路径均为决定性 FP + 无 unresolved | **路径探索聚合 → FP** |
-| 大空间的有界采样（`reduced_bound > 阈值`） | **UNKNOWN** |
+| A bounded sample that cannot exhaust the reduced space within the ten-attempt hard cap | **UNKNOWN** |
 | 探索中存在 unresolved | **UNKNOWN** |
 | leak 层跨路径**自相矛盾** | leak 层证据作废，落到其它判据 |
 
@@ -466,6 +476,11 @@ leak `484-2`（FP）保持不翻转来验证。
 
 - **逐步路径一致性**（`path_conformance`）：POC 必须复现 CSA 报告路径的**每一步**，
   否则该轮不接受（回灌重生成），**triggered 也不接受 TP**。
+- **Selected internal-path conformance**: the CSA audit covers only the
+  report's numbered events.  The simulator separately checks every selected
+  internal control branch (`selected_path_conformance`) and the callee return
+  implied by the caller condition.  Missing or incomplete evidence regenerates
+  the POC and cannot certify TP.
 - **绝不因解析失败翻 FP**：回复被截断/需修复时标 `parse_degraded`，
   强制 `path_conformance_ok=False` ⇒ 该轮重生成；退化为 **UNRESOLVED 而非 FP**。
   （历史事故：截断的回复被正则抠出 `triggered: true`、`path_conformance_ok` 默认 `True`，
@@ -494,7 +509,7 @@ leak `484-2`（FP）保持不翻转来验证。
 | F1 | 阶段 6b（`entry_state.py`） | **确定性**判定：入口 null 假设 + 报告自己穿过必然终止的检查 ⇒ 枚举前 FP |
 | F2 | `source_context.extract_callee_sources` | 把报告 `Calling 'X'` 事件的**真实函数体**同时喂给 10c 生成器与 10d 审计器（原来两边都只看到 bug 文件，`time.cc` 等**异名文件**里的被调函数对审计器不可见——这正是"输出参数未写入"的错误断言得以存活的原因） |
 | F3 | `prompt_templates` | 生成提示词新增禁用捷径 (e)（按**取值来源**判：不能靠"自造入口状态"让前提成立）；规则 9 改为把 `// POC_UNREACHABLE: <理由>` 写在**首行**；模拟提示词新增"入口状态制造"条款与**调用结果的 ASSUMPTION** 条款（报告假设某次调用"返回但未写输出参数"时必须对照真实函数体验证） |
-| F4 | `simulation_verifier._is_manufactured_trigger` | 审计回复新增 `bug_value_source`（`poc_argument` / `caller_data` / `api_return` / `unknown`）：当**触发值只能来自 POC 自己的实参**时，该轮 `triggered` 覆写为 false 并判 **FP**（`poc_argument` + `triggered` 同时出现才算；其余取值一律不覆写） |
+| F4 | `simulation_verifier._is_manufactured_trigger` | The audit emits `bug_value_source` and distinguishes `report_path_argument` from `poc_argument`. A null literal explicitly initialized in the reported path is validated deterministically against the report events and cannot be reclassified as POC invention. Only a trigger absent from the report path and supplied solely by the POC may flip TP to FP. |
 
 **生成器自我声明的通道**（F3 的消费者）：`// POC_UNREACHABLE:` 首行由
 `prompt_templates.parse_poc_unreachable_note` 解析后，作为**"待裁决的主张"**注入审计提示词
@@ -508,7 +523,7 @@ leak `484-2`（FP）保持不翻转来验证。
 
 | verdict | 可由哪些阶段得出 |
 |---|---|
-| **FP** | 阶段 6a（报告自相矛盾）、阶段 6b（入口状态制造）、阶段 7（语义有限域冲突）、阶段 10d（`bug_value_source == poc_argument` 且 `triggered`）、阶段 9（真·冲突式不可行）、阶段 9 的四条推广（压缩/结构性/leak 一致性/探索聚合） |
+| **FP** | 阶段 6a（报告自相矛盾）、阶段 6b（入口状态制造）、阶段 7（语义有限域冲突）、阶段 10d（`bug_value_source == poc_argument`, `triggered=true`, and the trigger is absent from the report path）、阶段 9（真·冲突式不可行）、阶段 9 的四条推广（压缩/结构性/leak 一致性/探索聚合） |
 | **TP** | 阶段 9：模拟执行判定触发 bug；leak 层一致判 TP；验证出错时保留为 TP（未证实） |
 | **UNKNOWN** | 阶段 9 聚合：巨大空间的有界采样、探索中存在 unresolved |
 
@@ -542,8 +557,10 @@ leak `484-2`（FP）保持不翻转来验证。
     `CHECK_EQ` 这类**双操作数**形式也故意不判（首实参表达不了"要求非 null"）。
     **调用点扫描永远只是旁证**（写进 reason），"树内无调用方"单独不足以判 FP，也不许升级成独立判据
     （公开库 API 的调用方可能在语料之外）。`_requires_non_null` 对 `!V`（奇数个 `!`）必须返回 False。
-12. **`bug_value_source` 的覆写是单向的**：只有 `poc_argument` **且** `triggered` 同时成立才覆写为
-    `triggered=False`/FP；其余取值（`caller_data`/`api_return`/`unknown`/缺失）一律不覆写。
+12. **`bug_value_source` 的覆写是单向的**：只有 `poc_argument` **且** `triggered` 同时成立，
+    and the same trigger value is absent from the CSA report path, may flip to
+    `triggered=False`/FP. `report_path_argument`, `real_caller`, `api_return`,
+    `member_state`, `unknown`, or a missing value never triggers the flip.
     这条不变量保护的是 `clone_index` 那类样本——null 来自**真实调用方的数据通路**时属 TP，
     不得因为"值最终来自某个调用"就被判 FP。
 13. **被调函数体是"证据"不是"结论"**：`extract_callee_sources` 解析不出来时只输出空块，

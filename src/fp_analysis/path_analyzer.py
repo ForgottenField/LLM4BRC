@@ -22,6 +22,8 @@ from fp_analysis.models import (
 from fp_analysis.prompt_templates import (
     CONSTRAINT_COMPLETION_PROMPT,
     CONSTRAINT_COMPLETION_SYSTEM_PROMPT,
+    GLOBAL_CONSTRAINT_SOLVE_PROMPT,
+    GLOBAL_CONSTRAINT_SOLVE_SYSTEM_PROMPT,
     SEMANTIC_FEASIBILITY_PROMPT,
     SEMANTIC_FEASIBILITY_SYSTEM_PROMPT,
     ERROR_START_LEGEND_DEFAULT,
@@ -34,9 +36,16 @@ from fp_analysis.prompt_templates import (
     POC_GENERATION_SYSTEM_PROMPT,
 )
 from fp_analysis.source_context import SourceContextExtractor
+from fp_analysis.constraint_model import (
+    build_global_constraint_bundle,
+    render_bundle,
+    solve_immediate_conflicts,
+    validate_solution,
+)
 from fp_analysis.pdg_augment import augment_pdg_sdg
 from fp_analysis.pdg_loader import load_pdg
 from fp_analysis.pdg_models import SDG
+from fp_analysis.path_semantics import selected_call_return_violations
 from fp_analysis.domain_facts import (
     domain_facts_from_lines,
     format_domain_facts,
@@ -853,6 +862,10 @@ class PathSpaceExhausted(Exception):
     """
 
 
+class PathSelectionUnavailable(RuntimeError):
+    """The path selector could not obtain a usable model response."""
+
+
 class FPAnalyzer:
     """Analyze CSA reports, complete path constraints, check feasibility, and generate POCs.
 
@@ -896,6 +909,8 @@ class FPAnalyzer:
         )
         self._sdg: SDG | None = sdg
         self._lite_evidence = ""
+        self._global_constraint_bundle = None
+        self._global_constraint_solution = None
 
         # Load PDG if provided
         if self._sdg is None and pdg_path:
@@ -1292,6 +1307,7 @@ class FPAnalyzer:
         selections: list[dict],
         constraints_str: str,
         global_constraints: str,
+        segments: list | None = None,
     ) -> dict:
         """Check whether merged segment selections are globally consistent.
 
@@ -1299,6 +1315,25 @@ class FPAnalyzer:
         has no contradictions.
         """
         parsed = analysis_result.parsed_report
+        semantic_violations = selected_call_return_violations(
+            selections,
+            segments,
+            source_root=self._source_root or analysis_result.source_root,
+        )
+        if semantic_violations:
+            segment_indexes = sorted({
+                int(item.get("segment_index"))
+                for item in semantic_violations
+                if item.get("segment_index") is not None
+            })
+            return {
+                "is_globally_feasible": False,
+                "conflicting_segments": segment_indexes,
+                "reason": " ".join(
+                    item["reason"] for item in semantic_violations
+                ),
+                "deterministic_constraint_conflicts": semantic_violations,
+            }
 
         # Format segment selections for the prompt
         segment_parts: list[str] = []
@@ -1322,6 +1357,11 @@ class FPAnalyzer:
             bug_description=parsed.metadata.bug_description,
             completed_constraints=constraints_str,
             global_constraints=global_constraints or "(no project-wide constraints)",
+            structured_constraints=(
+                render_bundle(self._global_constraint_bundle)
+                if self._global_constraint_bundle is not None
+                else "(not extracted)"
+            ),
             segment_selections=segment_selections_text,
         )
 
@@ -1371,6 +1411,7 @@ class FPAnalyzer:
             selections=selections,
             constraints_str=constraints_str,
             global_constraints=global_constraints,
+            segments=segments,
         )
         if merge and merge.get("is_globally_feasible", False):
             return selections
@@ -1451,6 +1492,8 @@ class FPAnalyzer:
                 "segment_index": 0,
                 "branch_decisions": [],
                 "established_state": "linear path",
+                "function": getattr(segments[0], "function_name", "") if segments else "",
+                "file": getattr(segments[0], "function_file", "") if segments else "",
             }]
 
         logger.info("%d segment(s) for conflict-driven path selection.", len(segments))
@@ -1524,6 +1567,7 @@ class FPAnalyzer:
                 selections=list(current_selections.values()),
                 constraints_str=constraints_str,
                 global_constraints=global_constraints,
+                segments=segments,
             )
 
             if merge_result and merge_result.get("is_globally_feasible", False):
@@ -1661,7 +1705,62 @@ class FPAnalyzer:
                         f"{fact.variable} {fact.operator} {fact.value}"
                     )
 
+        try:
+            self._global_constraint_solution = self.check_global_constraints(parsed)
+        except Exception as exc:  # noqa: BLE001 - feasibility remains available
+            logger.warning("Global constraint solve failed: %s", exc)
+            self._global_constraint_solution = {
+                "status": "unknown",
+                "contradictions": [],
+                "derived_facts": [],
+                "missing_information": [str(exc)],
+                "reason": "",
+            }
         return hard_constraints, cumulative_state
+
+    def check_global_constraints(self, parsed: ParsedReport) -> dict:
+        """Build and solve the report's complete data-constraint bundle."""
+        bundle = build_global_constraint_bundle(parsed, self._source_root)
+        deterministic = solve_immediate_conflicts(bundle)
+        if deterministic["status"] == "unsat":
+            result = deterministic
+        elif not bundle.facts and not bundle.effects:
+            result = deterministic
+        else:
+            prompt = GLOBAL_CONSTRAINT_SOLVE_PROMPT.format(
+                bug_type=parsed.metadata.bug_type,
+                bug_file=parsed.metadata.bug_file,
+                bug_line=parsed.metadata.bug_line,
+                bug_function=parsed.metadata.function_name,
+                constraint_bundle=render_bundle(bundle),
+            )
+            try:
+                raw = self._call_llm(
+                    GLOBAL_CONSTRAINT_SOLVE_SYSTEM_PROMPT,
+                    prompt,
+                    max_tokens=8192,
+                )
+                result = validate_solution(
+                    self._parse_json_response(raw, "global_constraint_solve"),
+                    bundle,
+                )
+            except (RuntimeError, json.JSONDecodeError) as exc:
+                logger.warning("Global constraint LLM solve failed: %s", exc)
+                result = {
+                    "status": "unknown",
+                    "contradictions": [],
+                    "derived_facts": [],
+                    "missing_information": [str(exc)],
+                    "reason": "",
+                }
+        self._global_constraint_bundle = bundle
+        self._global_constraint_solution = result
+        logger.info(
+            "Global constraints: %s (%d facts, %d source effects, %d contradiction(s))",
+            result["status"], len(bundle.facts), len(bundle.effects),
+            len(result["contradictions"]),
+        )
+        return result
 
     def _build_hard_constraints_from_assumptions(
         self,
@@ -2103,6 +2202,8 @@ class FPAnalyzer:
                     "segment_index": seg_idx,
                     "branch_decisions": [],
                     "established_state": state_desc,
+                    "function": getattr(segment, "function_name", ""),
+                    "file": getattr(segment, "function_file", ""),
                     "is_feasible": True,
                 }
                 selections[seg_idx] = selection
@@ -2217,12 +2318,18 @@ class FPAnalyzer:
                     "branch_taken": taken,
                     "condition": condition,
                     "source_line": line,
+                    "kind": getattr(d, "kind", "control"),
+                    "callee_name": getattr(d, "callee_name", ""),
+                    "function_name": getattr(d, "function_name", ""),
+                    "file": getattr(d, "source_file", ""),
                 })
 
             selection = {
                 "segment_index": seg_idx,
                 "branch_decisions": branch_decisions,
                 "established_state": data.get("established_state", ""),
+                "function": getattr(segment, "function_name", ""),
+                "file": getattr(segment, "function_file", ""),
                 "reasoning": data.get("reasoning", ""),
                 "selected_candidate": selected_idx,
                 "num_candidates": len(candidates),
@@ -2331,7 +2438,9 @@ class FPAnalyzer:
                 logger.warning(
                     "Segment %d re-selection failed: %s", seg_idx, e,
                 )
-                return None
+                raise PathSelectionUnavailable(
+                    f"segment {seg_idx} re-selection failed: {e}"
+                ) from e
 
             # Map selected_candidate → branch_decisions
             selected_idx = _selected_candidate_index(
@@ -2353,12 +2462,18 @@ class FPAnalyzer:
                     "branch_taken": taken,
                     "condition": condition,
                     "source_line": line,
+                    "kind": getattr(d, "kind", "control"),
+                    "callee_name": getattr(d, "callee_name", ""),
+                    "function_name": getattr(d, "function_name", ""),
+                    "file": getattr(d, "source_file", ""),
                 })
 
             new_selections[seg_idx] = {
                 "segment_index": seg_idx,
                 "branch_decisions": branch_decisions,
                 "established_state": data.get("established_state", ""),
+                "function": getattr(segment, "function_name", ""),
+                "file": getattr(segment, "function_file", ""),
                 "reasoning": data.get("reasoning", ""),
                 "selected_candidate": selected_idx,
                 "num_candidates": len(candidates),
@@ -2519,6 +2634,13 @@ class FPAnalyzer:
                 for d in decisions[:_MAX_RENDERED_DECISIONS]:
                     cond = d.get("condition", "") or d.get("condition_expr", "")
                     line = d.get("line") or d.get("source_line") or "?"
+                    if str(d.get("kind") or "").lower() == "call":
+                        lines.append(
+                            f"  - L{line}: call `{cond}` (call occurrence; "
+                            "its return value is constrained by the callee's "
+                            "selected branches)"
+                        )
+                        continue
                     taken = "TRUE" if d.get("branch_taken", True) else "FALSE"
                     lines.append(
                         f"  - L{line}: condition `{cond}` → {taken}"
